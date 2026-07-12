@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+dist
+node_modules
+.pgdata
+.pgdata-agent
+.vscode
+uploads
+*.log
+*.pid

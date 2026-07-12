@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+.env.*
+*.log
+.pgdata
+.pgdata-agent
+uploads
