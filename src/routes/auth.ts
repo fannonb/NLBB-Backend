@@ -156,6 +156,10 @@ authRouter.post(
       to: payload.email.trim().toLowerCase(),
       fullName: payload.fullName.trim(),
       role: payload.role,
+    }).then((result) => {
+      if (!result.sent) {
+        console.error("[auth] welcome email not sent:", result.reason);
+      }
     }).catch((error) => {
       console.error("[auth] welcome email failed:", error);
     });
@@ -337,6 +341,7 @@ authRouter.post(
   "/forgot-password",
   asyncHandler(async (req, res) => {
     const { email } = forgotPasswordSchema.parse(req.body);
+    let sent = false;
 
     try {
       const { data, error } = await supabaseAdmin.auth.admin.generateLink({
@@ -351,16 +356,21 @@ authRouter.post(
         throw error ?? new Error("Recovery link could not be generated");
       }
 
-      await sendPasswordResetEmail({
+      const emailResult = await sendPasswordResetEmail({
         to: email.trim().toLowerCase(),
         resetLink: data.properties.action_link,
       });
+
+      sent = emailResult.sent;
+      if (!emailResult.sent) {
+        console.error("[auth] password reset email not sent:", emailResult.reason);
+      }
     } catch (err) {
       // Log server-side but do not expose to client.
       console.error("[auth] forgot-password internal error:", err);
     }
 
-    res.json({ success: true, data: { sent: true } });
+    res.json({ success: true, data: { sent } });
   })
 );
 

@@ -27,6 +27,16 @@ const escapeHtml = (value: string) =>
 
 let cachedTransporter: Transporter<SentMessageInfo> | null = null;
 
+export type EmailSendResult =
+  | {
+      sent: true;
+      transport: string;
+    }
+  | {
+      sent: false;
+      reason: string;
+    };
+
 type SmtpCandidate = {
   key: string;
   label: string;
@@ -109,14 +119,17 @@ const sendEmail = async (payload: {
   subject: string;
   text: string;
   html: string;
-}) => {
+}): Promise<EmailSendResult> => {
   const candidates = buildTransportCandidates();
   if (candidates.length === 0) {
     // eslint-disable-next-line no-console
     console.warn("[email] SMTP is not configured; skipping email send", {
       missing: getMissingConfig(),
     });
-    return { sent: false as const };
+    return {
+      sent: false,
+      reason: `SMTP is not configured. Missing: ${getMissingConfig().join(", ")}`,
+    };
   }
 
   let lastError: unknown = null;
@@ -139,7 +152,7 @@ const sendEmail = async (payload: {
         console.warn(`[email] sent successfully using ${candidate.label}`);
       }
 
-      return { sent: true as const };
+      return { sent: true, transport: candidate.label };
     } catch (error) {
       lastError = error;
       cachedTransporter = null;
@@ -151,7 +164,13 @@ const sendEmail = async (payload: {
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("Email sending failed");
+  const reason =
+    lastError instanceof Error ? lastError.message : "Email sending failed";
+
+  return {
+    sent: false,
+    reason,
+  };
 };
 
 const wrapTemplate = (title: string, bodyHtml: string) => `
@@ -175,7 +194,7 @@ export const sendWelcomeEmail = async (input: {
   to: string;
   fullName: string;
   role: UserRole;
-}) => {
+}): Promise<EmailSendResult> => {
   const roleLabel = input.role === "provider" ? "Provider" : input.role === "admin" ? "Admin" : "Customer";
   const subject = `Welcome to NLBB, ${input.fullName}`;
   const body = [
@@ -206,7 +225,7 @@ export const sendWelcomeEmail = async (input: {
   });
 };
 
-export const sendPasswordResetEmail = async (input: { to: string; resetLink: string }) => {
+export const sendPasswordResetEmail = async (input: { to: string; resetLink: string }): Promise<EmailSendResult> => {
   const subject = "Reset your NLBB password";
   const body = [
     paragraph("We received a request to reset your NLBB password."),
