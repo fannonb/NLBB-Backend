@@ -16,6 +16,13 @@ interface CreateNotificationInput {
   actionId?: string;
 }
 
+interface PushNotificationPayload {
+  notificationId: string;
+  type: Notification["type"];
+  actionType?: Notification["actionType"];
+  actionId?: string;
+}
+
 export const createNotification = async (input: CreateNotificationInput) => {
   const db = getDb();
   const [notification] = await db
@@ -34,7 +41,16 @@ export const createNotification = async (input: CreateNotificationInput) => {
 
   const tokens = await getPushTokensForUser(input.userId).catch(() => []);
   if (tokens.length > 0) {
-    await sendPushNotification(tokens, input.title, input.body);
+    await sendPushNotification(tokens, {
+      title: input.title,
+      body: input.body,
+      data: {
+        notificationId: notification.id,
+        type: notification.type as Notification["type"],
+        actionType: (notification.actionType as Notification["actionType"] | null) ?? undefined,
+        actionId: notification.actionId ?? undefined,
+      },
+    });
   }
 
   return {
@@ -110,19 +126,51 @@ export const markAllNotificationsRead = async (userId: string) => {
   return { updated: updated.length };
 };
 
-export const sendPushNotification = async (tokens: string[], title: string, body: string) => {
-  if (tokens.length === 0) {
+const isExpoPushToken = (token: string) =>
+  token.startsWith("ExponentPushToken[") || token.startsWith("ExpoPushToken[");
+
+export const sendPushNotification = async (
+  tokens: string[],
+  payload: {
+    title: string;
+    body: string;
+    data: PushNotificationPayload;
+  }
+) => {
+  const validTokens = tokens.filter(isExpoPushToken);
+  if (validTokens.length === 0) {
     return { sent: false };
   }
 
   try {
-    await axios.post(
+    const response = await axios.post(
       EXPO_PUSH_API_URL,
-      tokens.map((to) => ({ to, title, body, sound: "default" })),
-      { headers: { "Content-Type": "application/json", Accept: "application/json" } }
+      validTokens.map((to) => ({
+        to,
+        title: payload.title,
+        body: payload.body,
+        sound: "default",
+        channelId: "default",
+        data: payload.data,
+      })),
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "Accept-encoding": "gzip, deflate",
+        },
+      }
     );
-    return { sent: true };
-  } catch {
+
+    const tickets = Array.isArray(response.data?.data) ? response.data.data : [];
+    const failedTickets = tickets.filter((ticket: { status?: string }) => ticket?.status === "error");
+    if (failedTickets.length > 0) {
+      console.warn("[push] Expo push service returned ticket errors", failedTickets);
+    }
+
+    return { sent: true, attempted: validTokens.length, failedTickets: failedTickets.length };
+  } catch (error) {
+    console.warn("[push] Failed to send Expo push notification", error);
     return { sent: false };
   }
 };
