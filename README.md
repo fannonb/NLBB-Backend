@@ -6,6 +6,7 @@ Backend API for NLBB marketplace, built with `Express + TypeScript + PostgreSQL`
 
 - Backend auth/session management
 - User profile bootstrap/update (`customer`, `provider`, `admin`)
+- Official email sending via domain SMTP for welcomes and password resets
 - Provider discovery and details with contact gating for anonymous users
 - Provider profile onboarding + open/close state management
 - Booking lifecycle:
@@ -98,6 +99,17 @@ npm run seed:yes
 - `ALLOWED_ORIGINS` should include your web admin origin(s), e.g. `http://localhost:3000`.
 - `DATABASE_URL` is required for the backend and for Drizzle migrations. For hosted Supabase, prefer the exact `Session pooler` URI from `Settings > Database > Connect`, especially on IPv4-only networks.
 - `SUPABASE_ANON_KEY` is recommended for backend-mediated sign-in, sign-up, and refresh flows. If omitted, the backend falls back to the service-role key for auth-client calls.
+- Configure SMTP if you want official emails from your registered domain:
+  - `EMAIL_FROM`
+  - `EMAIL_REPLY_TO`
+  - `SMTP_HOST`
+  - `SMTP_PORT`
+  - `SMTP_SECURE`
+  - `SMTP_USER`
+  - `SMTP_PASSWORD`
+- When SMTP is configured, the backend sends:
+  - welcome emails after account creation
+  - password-reset emails from the `forgot-password` flow
 - Media uploads now target Supabase Storage buckets instead of local disk routes. Configure:
   - `SUPABASE_USER_AVATAR_BUCKET`
   - `SUPABASE_PROVIDER_AVATAR_BUCKET`

@@ -10,6 +10,16 @@ const envSchema = z.object({
   APP_BASE_URL: z.string().default("http://localhost:4000"),
   PASSWORD_RESET_REDIRECT_URL: z.string().default("nlbb://reset-password"),
   ALLOWED_ORIGINS: z.string().optional(),
+  EMAIL_FROM: z.string().optional(),
+  EMAIL_REPLY_TO: z.string().optional(),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().optional(),
+  SMTP_SECURE: z
+    .string()
+    .optional()
+    .transform((v) => (v ?? "false").toLowerCase() === "true"),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASSWORD: z.string().optional(),
   PAYMENTS_ENABLED: z
     .string()
     .optional()

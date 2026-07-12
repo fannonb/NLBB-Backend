@@ -19,6 +19,7 @@ import { ApiError } from "../utils/apiError";
 import { asyncHandler } from "../utils/asyncHandler";
 import { z } from "zod";
 import { uploadUserAvatar } from "../services/mediaStorageService";
+import { sendPasswordResetEmail, sendWelcomeEmail } from "../services/emailService";
 import type { UserRole } from "../types/domain";
 
 export const authRouter = Router();
@@ -150,6 +151,14 @@ authRouter.post(
         location: payload.location ?? null,
       }
     );
+
+    void sendWelcomeEmail({
+      to: payload.email.trim().toLowerCase(),
+      fullName: payload.fullName.trim(),
+      role: payload.role,
+    }).catch((error) => {
+      console.error("[auth] welcome email failed:", error);
+    });
 
     res.status(201).json({ success: true, data: response });
   })
@@ -314,11 +323,11 @@ authRouter.post(
 /**
  * POST /api/auth/forgot-password
  *
- * Triggers a Supabase password-recovery email to the given address.
+ * Generates a recovery link and sends it from the NLBB domain SMTP account.
  * Always returns 200 regardless of whether the email exists in order to
  * prevent user-enumeration attacks.
  *
- * The recovery email contains a link of the form:
+ * The email contains a recovery link that redirects into the mobile reset flow:
  *   <PASSWORD_RESET_REDIRECT_URL>#access_token=<token>&type=recovery
  *
  * The mobile client must intercept this deep-link, extract the access_token,
@@ -329,10 +338,22 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     const { email } = forgotPasswordSchema.parse(req.body);
 
-    // Fire-and-forget — we intentionally do not surface errors to the caller.
     try {
-      await supabaseAdmin.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-        redirectTo: env.PASSWORD_RESET_REDIRECT_URL,
+      const { data, error } = await supabaseAdmin.auth.admin.generateLink({
+        type: "recovery",
+        email: email.trim().toLowerCase(),
+        options: {
+          redirectTo: env.PASSWORD_RESET_REDIRECT_URL,
+        },
+      });
+
+      if (error || !data?.properties?.action_link) {
+        throw error ?? new Error("Recovery link could not be generated");
+      }
+
+      await sendPasswordResetEmail({
+        to: email.trim().toLowerCase(),
+        resetLink: data.properties.action_link,
       });
     } catch (err) {
       // Log server-side but do not expose to client.
