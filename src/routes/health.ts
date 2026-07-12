@@ -2,16 +2,24 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { asyncHandler } from "../utils/asyncHandler";
+import { getEmailDiagnostics } from "../services/emailService";
 
 export const healthRouter = Router();
 
 healthRouter.get("/", (_req, res) => {
+  const email = getEmailDiagnostics();
+
   res.json({
     success: true,
     data: {
       status: "ok",
       service: "nlbb-backend",
       timestamp: new Date().toISOString(),
+      email: {
+        configured: email.configured,
+        missing: email.missing,
+        candidates: email.candidates,
+      },
     },
   });
 });

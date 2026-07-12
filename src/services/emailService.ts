@@ -43,6 +43,32 @@ type SmtpCandidate = {
   options: SMTPTransport.Options;
 };
 
+type MailDiagnostic = {
+  configured: boolean;
+  missing: string[];
+  host: string | null;
+  from: string | null;
+  replyTo: string | null;
+  candidates: Array<{
+    label: string;
+    port: number;
+    secure: boolean;
+    requireTLS: boolean;
+    ignoreTLS: boolean;
+    tlsRejectUnauthorized: boolean;
+  }>;
+};
+
+type MailVerificationResult =
+  | {
+      ok: true;
+      candidate: string;
+    }
+  | {
+      ok: false;
+      reason: string;
+    };
+
 const buildTransportOptions = (port: number, secure: boolean): SMTPTransport.Options => ({
   host: env.SMTP_HOST,
   port,
@@ -106,6 +132,29 @@ const buildTransportCandidates = (): SmtpCandidate[] => {
   return candidates;
 };
 
+const formatMailError = (error: unknown) => {
+  if (!(error instanceof Error)) {
+    return "Unknown email error";
+  }
+
+  const details = error as Error & {
+    code?: string;
+    command?: string;
+    responseCode?: number;
+    response?: string;
+  };
+
+  return [
+    details.message,
+    details.code ? `code=${details.code}` : null,
+    details.command ? `command=${details.command}` : null,
+    details.responseCode ? `responseCode=${details.responseCode}` : null,
+    details.response ? `response=${details.response}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+};
+
 const getTransporter = (candidate: SmtpCandidate) => {
   if (!cachedTransporter) {
     cachedTransporter = nodemailer.createTransport(candidate.options);
@@ -159,17 +208,69 @@ const sendEmail = async (payload: {
       // eslint-disable-next-line no-console
       console.warn(
         `[email] failed via ${candidate.label} (${env.SMTP_HOST}:${candidate.options.port}, secure=${candidate.options.secure})`,
-        error
+        formatMailError(error)
       );
     }
   }
 
-  const reason =
-    lastError instanceof Error ? lastError.message : "Email sending failed";
-
   return {
     sent: false,
-    reason,
+    reason: formatMailError(lastError),
+  };
+};
+
+export const getEmailDiagnostics = (): MailDiagnostic => {
+  const candidates = buildTransportCandidates();
+
+  return {
+    configured: isConfigured(),
+    missing: getMissingConfig(),
+    host: env.SMTP_HOST ?? null,
+    from: env.EMAIL_FROM ?? null,
+    replyTo: env.EMAIL_REPLY_TO ?? SUPPORT_EMAIL,
+    candidates: candidates.map((candidate) => ({
+      label: candidate.label,
+      port: candidate.options.port ?? 0,
+      secure: Boolean(candidate.options.secure),
+      requireTLS: Boolean(candidate.options.requireTLS),
+      ignoreTLS: Boolean(candidate.options.ignoreTLS),
+      tlsRejectUnauthorized: candidate.options.tls?.rejectUnauthorized !== false,
+    })),
+  };
+};
+
+export const verifyEmailTransport = async (): Promise<MailVerificationResult> => {
+  const candidates = buildTransportCandidates();
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      reason: `SMTP is not configured. Missing: ${getMissingConfig().join(", ")}`,
+    };
+  }
+
+  let lastError: unknown = null;
+
+  for (const candidate of candidates) {
+    try {
+      cachedTransporter = null;
+      const transport = getTransporter(candidate);
+      await transport.verify();
+      cachedTransporter = null;
+      return { ok: true, candidate: candidate.label };
+    } catch (error) {
+      lastError = error;
+      cachedTransporter = null;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[email] verify failed via ${candidate.label} (${env.SMTP_HOST}:${candidate.options.port}, secure=${candidate.options.secure})`,
+        formatMailError(error)
+      );
+    }
+  }
+
+  return {
+    ok: false,
+    reason: formatMailError(lastError),
   };
 };
 

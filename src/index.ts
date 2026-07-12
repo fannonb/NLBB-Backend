@@ -2,6 +2,7 @@ import { app } from "./app";
 import { env } from "./config/env";
 import { initializeDatabase } from "./db/client";
 import { ensureDefaultCategories } from "./services/ensureDefaultCategories";
+import { getEmailDiagnostics, verifyEmailTransport } from "./services/emailService";
 
 async function start() {
   try {
@@ -16,6 +17,31 @@ async function start() {
   app.listen(env.PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`NLBB backend running on http://localhost:${env.PORT}`);
+
+    const email = getEmailDiagnostics();
+    if (!email.configured) {
+      // eslint-disable-next-line no-console
+      console.warn("[email] SMTP is not fully configured", {
+        missing: email.missing,
+      });
+      return;
+    }
+
+    void verifyEmailTransport()
+      .then((result) => {
+        if (result.ok) {
+          // eslint-disable-next-line no-console
+          console.log(`[email] SMTP verification succeeded using ${result.candidate}`);
+          return;
+        }
+
+        // eslint-disable-next-line no-console
+        console.error("[email] SMTP verification failed:", result.reason);
+      })
+      .catch((error) => {
+        // eslint-disable-next-line no-console
+        console.error("[email] SMTP verification crashed:", error);
+      });
   });
 }
 
