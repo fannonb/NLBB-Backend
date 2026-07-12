@@ -1,16 +1,21 @@
 import nodemailer from "nodemailer";
 import type { SentMessageInfo, Transporter } from "nodemailer";
+import type SMTPTransport from "nodemailer/lib/smtp-transport";
 import { env } from "../config/env";
 import type { UserRole } from "../types/domain";
 
 const SUPPORT_EMAIL = "support@nlbb.co.ke";
 
-const isConfigured = () =>
-  !!env.SMTP_HOST &&
-  !!env.SMTP_PORT &&
-  !!env.SMTP_USER &&
-  !!env.SMTP_PASSWORD &&
-  !!env.EMAIL_FROM;
+const getMissingConfig = () =>
+  [
+    !env.SMTP_HOST ? "SMTP_HOST" : null,
+    !env.SMTP_PORT ? "SMTP_PORT" : null,
+    !env.SMTP_USER ? "SMTP_USER" : null,
+    !env.SMTP_PASSWORD ? "SMTP_PASSWORD" : null,
+    !env.EMAIL_FROM ? "EMAIL_FROM" : null,
+  ].filter(Boolean) as string[];
+
+const isConfigured = () => getMissingConfig().length === 0;
 
 const escapeHtml = (value: string) =>
   value
@@ -22,24 +27,79 @@ const escapeHtml = (value: string) =>
 
 let cachedTransporter: Transporter<SentMessageInfo> | null = null;
 
-const getTransporter = () => {
-  if (cachedTransporter) {
-    return cachedTransporter;
-  }
+type SmtpCandidate = {
+  key: string;
+  label: string;
+  options: SMTPTransport.Options;
+};
 
+const buildTransportOptions = (port: number, secure: boolean): SMTPTransport.Options => ({
+  host: env.SMTP_HOST,
+  port,
+  secure,
+  auth: {
+    user: env.SMTP_USER,
+    pass: env.SMTP_PASSWORD,
+  },
+  connectionTimeout: env.SMTP_CONNECTION_TIMEOUT_MS ?? 10_000,
+  greetingTimeout: env.SMTP_GREETING_TIMEOUT_MS ?? 10_000,
+  socketTimeout: env.SMTP_SOCKET_TIMEOUT_MS ?? 20_000,
+  requireTLS: !secure && (env.SMTP_REQUIRE_TLS || port === 587),
+  ignoreTLS: !secure && env.SMTP_IGNORE_TLS,
+  tls: {
+    servername: env.SMTP_HOST,
+    rejectUnauthorized: env.SMTP_TLS_REJECT_UNAUTHORIZED,
+  },
+});
+
+const buildTransportCandidates = (): SmtpCandidate[] => {
   if (!isConfigured()) {
-    return null;
+    return [];
   }
 
-  cachedTransporter = nodemailer.createTransport({
-    host: env.SMTP_HOST,
-    port: env.SMTP_PORT,
-    secure: env.SMTP_SECURE,
-    auth: {
-      user: env.SMTP_USER,
-      pass: env.SMTP_PASSWORD,
-    },
-  });
+  const candidates: SmtpCandidate[] = [];
+  const registerCandidate = (port: number, secure: boolean, label: string) => {
+    const key = `${env.SMTP_HOST}:${port}:${secure ? "secure" : "starttls"}`;
+    if (candidates.some((candidate) => candidate.key === key)) {
+      return;
+    }
+
+    candidates.push({
+      key,
+      label,
+      options: buildTransportOptions(port, secure),
+    });
+  };
+
+  registerCandidate(env.SMTP_PORT!, env.SMTP_SECURE || env.SMTP_PORT === 465, "primary");
+
+  if (env.SMTP_PORT === 465 && !env.SMTP_SECURE) {
+    registerCandidate(465, true, "automatic SSL retry");
+  }
+
+  if (env.SMTP_PORT === 587 && env.SMTP_SECURE) {
+    registerCandidate(587, false, "automatic STARTTLS retry");
+  }
+
+  if (env.SMTP_FALLBACK_PORT) {
+    registerCandidate(
+      env.SMTP_FALLBACK_PORT,
+      env.SMTP_FALLBACK_PORT === 465,
+      "configured fallback"
+    );
+  } else if (env.SMTP_PORT === 465) {
+    registerCandidate(587, false, "automatic STARTTLS fallback");
+  } else if (env.SMTP_PORT === 587) {
+    registerCandidate(465, true, "automatic SSL fallback");
+  }
+
+  return candidates;
+};
+
+const getTransporter = (candidate: SmtpCandidate) => {
+  if (!cachedTransporter) {
+    cachedTransporter = nodemailer.createTransport(candidate.options);
+  }
 
   return cachedTransporter;
 };
@@ -50,23 +110,48 @@ const sendEmail = async (payload: {
   text: string;
   html: string;
 }) => {
-  const transport = getTransporter();
-  if (!transport) {
+  const candidates = buildTransportCandidates();
+  if (candidates.length === 0) {
     // eslint-disable-next-line no-console
-    console.warn("[email] SMTP is not configured; skipping email send");
+    console.warn("[email] SMTP is not configured; skipping email send", {
+      missing: getMissingConfig(),
+    });
     return { sent: false as const };
   }
 
-  await transport.sendMail({
-    from: env.EMAIL_FROM,
-    to: payload.to,
-    replyTo: env.EMAIL_REPLY_TO ?? SUPPORT_EMAIL,
-    subject: payload.subject,
-    text: payload.text,
-    html: payload.html,
-  });
+  let lastError: unknown = null;
 
-  return { sent: true as const };
+  for (const candidate of candidates) {
+    try {
+      cachedTransporter = null;
+      const transport = getTransporter(candidate);
+      await transport.sendMail({
+        from: env.EMAIL_FROM,
+        to: payload.to,
+        replyTo: env.EMAIL_REPLY_TO ?? SUPPORT_EMAIL,
+        subject: payload.subject,
+        text: payload.text,
+        html: payload.html,
+      });
+
+      if (candidate.label !== "primary") {
+        // eslint-disable-next-line no-console
+        console.warn(`[email] sent successfully using ${candidate.label}`);
+      }
+
+      return { sent: true as const };
+    } catch (error) {
+      lastError = error;
+      cachedTransporter = null;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[email] failed via ${candidate.label} (${env.SMTP_HOST}:${candidate.options.port}, secure=${candidate.options.secure})`,
+        error
+      );
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Email sending failed");
 };
 
 const wrapTemplate = (title: string, bodyHtml: string) => `

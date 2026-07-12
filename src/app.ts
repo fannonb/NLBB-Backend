@@ -3,7 +3,7 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
-import { allowedOrigins } from "./config/env";
+import { allowedOrigins, trustProxy } from "./config/env";
 import { requestContext } from "./middleware/requestContext";
 import { adminRouter } from "./routes/admin";
 import { analyticsRouter } from "./routes/analytics";
@@ -22,6 +22,8 @@ import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { apiLimiter, authLimiter } from "./middleware/rateLimiters";
 
 export const app = express();
+
+app.set("trust proxy", trustProxy);
 
 app.use(helmet());
 app.use(

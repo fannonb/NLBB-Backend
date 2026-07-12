@@ -10,14 +10,31 @@ const envSchema = z.object({
   APP_BASE_URL: z.string().default("http://localhost:4000"),
   PASSWORD_RESET_REDIRECT_URL: z.string().default("nlbb://reset-password"),
   ALLOWED_ORIGINS: z.string().optional(),
+  TRUST_PROXY: z.string().optional(),
   EMAIL_FROM: z.string().optional(),
   EMAIL_REPLY_TO: z.string().optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().optional(),
+  SMTP_FALLBACK_PORT: z.coerce.number().int().positive().optional(),
   SMTP_SECURE: z
     .string()
     .optional()
     .transform((v) => (v ?? "false").toLowerCase() === "true"),
+  SMTP_REQUIRE_TLS: z
+    .string()
+    .optional()
+    .transform((v) => (v ?? "false").toLowerCase() === "true"),
+  SMTP_IGNORE_TLS: z
+    .string()
+    .optional()
+    .transform((v) => (v ?? "false").toLowerCase() === "true"),
+  SMTP_TLS_REJECT_UNAUTHORIZED: z
+    .string()
+    .optional()
+    .transform((v) => (v ?? "true").toLowerCase() !== "false"),
+  SMTP_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  SMTP_GREETING_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  SMTP_SOCKET_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
   PAYMENTS_ENABLED: z
@@ -63,7 +80,30 @@ const envSchema = z.object({
 
 export const env = envSchema.parse(process.env);
 
+const parseTrustProxy = (value: string | undefined) => {
+  if (!value?.trim()) {
+    return env.NODE_ENV === "production" ? 1 : false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+
+  const numeric = Number(value);
+  if (Number.isInteger(numeric) && numeric >= 0) {
+    return numeric;
+  }
+
+  return value.trim();
+};
+
 export const allowedOrigins = (env.ALLOWED_ORIGINS ?? "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+
+export const trustProxy = parseTrustProxy(env.TRUST_PROXY);
