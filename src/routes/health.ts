@@ -2,12 +2,13 @@ import { Router } from "express";
 import { sql } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { asyncHandler } from "../utils/asyncHandler";
-import { getEmailDiagnostics } from "../services/emailService";
+import { getEmailDiagnostics, getEmailVerificationState } from "../services/emailService";
 
 export const healthRouter = Router();
 
 healthRouter.get("/", (_req, res) => {
   const email = getEmailDiagnostics();
+  const verification = getEmailVerificationState();
 
   res.json({
     success: true,
@@ -19,6 +20,7 @@ healthRouter.get("/", (_req, res) => {
         configured: email.configured,
         missing: email.missing,
         candidates: email.candidates,
+        verification,
       },
     },
   });

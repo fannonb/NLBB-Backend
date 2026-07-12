@@ -69,6 +69,33 @@ type MailVerificationResult =
       reason: string;
     };
 
+type MailVerificationState =
+  | {
+      status: "unchecked";
+      checkedAt: string | null;
+      candidate: null;
+      reason: null;
+    }
+  | {
+      status: "ok";
+      checkedAt: string;
+      candidate: string;
+      reason: null;
+    }
+  | {
+      status: "failed";
+      checkedAt: string;
+      candidate: null;
+      reason: string;
+    };
+
+let cachedVerificationState: MailVerificationState = {
+  status: "unchecked",
+  checkedAt: null,
+  candidate: null,
+  reason: null,
+};
+
 const buildTransportOptions = (port: number, secure: boolean): SMTPTransport.Options => ({
   host: env.SMTP_HOST,
   port,
@@ -239,9 +266,17 @@ export const getEmailDiagnostics = (): MailDiagnostic => {
   };
 };
 
+export const getEmailVerificationState = (): MailVerificationState => cachedVerificationState;
+
 export const verifyEmailTransport = async (): Promise<MailVerificationResult> => {
   const candidates = buildTransportCandidates();
   if (candidates.length === 0) {
+    cachedVerificationState = {
+      status: "failed",
+      checkedAt: new Date().toISOString(),
+      candidate: null,
+      reason: `SMTP is not configured. Missing: ${getMissingConfig().join(", ")}`,
+    };
     return {
       ok: false,
       reason: `SMTP is not configured. Missing: ${getMissingConfig().join(", ")}`,
@@ -256,6 +291,12 @@ export const verifyEmailTransport = async (): Promise<MailVerificationResult> =>
       const transport = getTransporter(candidate);
       await transport.verify();
       cachedTransporter = null;
+      cachedVerificationState = {
+        status: "ok",
+        checkedAt: new Date().toISOString(),
+        candidate: candidate.label,
+        reason: null,
+      };
       return { ok: true, candidate: candidate.label };
     } catch (error) {
       lastError = error;
@@ -268,9 +309,17 @@ export const verifyEmailTransport = async (): Promise<MailVerificationResult> =>
     }
   }
 
+  const reason = formatMailError(lastError);
+  cachedVerificationState = {
+    status: "failed",
+    checkedAt: new Date().toISOString(),
+    candidate: null,
+    reason,
+  };
+
   return {
     ok: false,
-    reason: formatMailError(lastError),
+    reason,
   };
 };
 
