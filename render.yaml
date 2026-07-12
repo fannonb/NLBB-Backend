@@ -1,0 +1,69 @@
+services:
+  - type: web
+    name: nlbb-backend
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    autoDeployTrigger: commit
+    healthCheckPath: /api/health
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: ALLOWED_ORIGINS
+        value: https://admin.nlbb.co.ke,https://nlbb-admin.vercel.app,http://localhost:5181,http://127.0.0.1:5181
+      - key: PAYMENTS_ENABLED
+        value: "false"
+      - key: MPESA_ENABLED
+        value: "false"
+      - key: MPESA_SIMULATE
+        value: "true"
+      - key: PASSWORD_RESET_REDIRECT_URL
+        value: nlbb://reset-password
+      - key: SUPABASE_USER_AVATAR_BUCKET
+        value: user-avatars
+      - key: SUPABASE_PROVIDER_AVATAR_BUCKET
+        value: provider-avatars
+      - key: SUPABASE_PROVIDER_COVER_BUCKET
+        value: provider-covers
+      - key: SUPABASE_PROVIDER_GALLERY_BUCKET
+        value: provider-gallery
+      - key: ADMIN_API_KEY_ENABLED
+        value: "false"
+      - key: REQUIRE_ACTIVE_USER
+        value: "true"
+      - key: APP_BASE_URL
+        fromService:
+          type: web
+          name: nlbb-backend
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: MPESA_ENV
+        sync: false
+      - key: MPESA_CONSUMER_KEY
+        sync: false
+      - key: MPESA_CONSUMER_SECRET
+        sync: false
+      - key: MPESA_SHORTCODE
+        sync: false
+      - key: MPESA_PASSKEY
+        sync: false
+      - key: MPESA_CALLBACK_URL
+        sync: false
+      - key: MPESA_CALLBACK_SECRET
+        sync: false
+      - key: MPESA_INITIATOR_NAME
+        sync: false
+      - key: MPESA_SECURITY_CREDENTIAL
+        sync: false
+      - key: ADMIN_API_KEY
+        sync: false
