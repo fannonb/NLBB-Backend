@@ -41,8 +41,13 @@ export const createNotification = async (input: CreateNotificationInput) => {
     .returning();
 
   const tokens = await getPushTokensForUser(input.userId).catch(() => []);
+  console.log("[push] notification created", {
+    userId: input.userId,
+    notificationId: notification.id,
+    tokenCount: tokens.length,
+  });
   if (tokens.length > 0) {
-    await sendPushNotification(tokens, {
+    const result = await sendPushNotification(tokens, {
       title: input.title,
       body: input.body,
       data: {
@@ -51,6 +56,16 @@ export const createNotification = async (input: CreateNotificationInput) => {
         actionType: (notification.actionType as Notification["actionType"] | null) ?? undefined,
         actionId: notification.actionId ?? undefined,
       },
+    });
+    console.log("[push] notification delivery result", {
+      userId: input.userId,
+      notificationId: notification.id,
+      ...result,
+    });
+  } else {
+    console.warn("[push] no push tokens registered for user", {
+      userId: input.userId,
+      notificationId: notification.id,
     });
   }
 

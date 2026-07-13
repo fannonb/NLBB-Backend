@@ -355,6 +355,7 @@ export const upsertPushToken = async (
       .update(pushTokens)
       .set({ userId: uid, platform: payload.platform, lastSeenAt: now })
       .where(eq(pushTokens.id, existing.id));
+    console.log("[push] push token refreshed", { userId: uid, platform: payload.platform });
     return;
   }
 
@@ -365,6 +366,7 @@ export const upsertPushToken = async (
     lastSeenAt: now,
     createdAt: now,
   });
+  console.log("[push] push token registered", { userId: uid, platform: payload.platform });
 };
 
 export const getPushTokensForUser = async (uid: string): Promise<string[]> => {
