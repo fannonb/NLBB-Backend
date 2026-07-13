@@ -19,7 +19,7 @@ import { providersRouter } from "./routes/providers";
 import { reviewsRouter } from "./routes/reviews";
 import { subscriptionsRouter } from "./routes/subscriptions";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
-import { apiLimiter, authLimiter } from "./middleware/rateLimiters";
+import { apiLimiter } from "./middleware/rateLimiters";
 
 export const app = express();
 
@@ -56,7 +56,6 @@ app.use(
 app.use((req, res, next) => {
   const path = req.path;
   const hasScopedLimiter =
-    path.startsWith("/api/auth") ||
     path.startsWith("/api/payments/me") ||
     path.startsWith("/api/subscriptions/me/pay");
 
@@ -80,7 +79,7 @@ app.get("/", (_req, res) => {
 
 app.use("/api/health", healthRouter);
 app.use("/api/config", configRouter);
-app.use("/api/auth", authLimiter, authRouter);
+app.use("/api/auth", authRouter);
 app.use("/api/categories", categoriesRouter);
 app.use("/api/providers", providersRouter);
 app.use("/api/favorites", favoritesRouter);

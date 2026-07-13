@@ -340,10 +340,10 @@ authRouter.post(
 authRouter.post(
   "/forgot-password",
   asyncHandler(async (req, res) => {
-    const { email } = forgotPasswordSchema.parse(req.body);
     let sent = false;
 
     try {
+      const { email } = forgotPasswordSchema.parse(req.body);
       const { data, error } = await supabaseAdmin.auth.admin.generateLink({
         type: "recovery",
         email: email.trim().toLowerCase(),
