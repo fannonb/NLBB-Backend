@@ -19,7 +19,7 @@ import { providersRouter } from "./routes/providers";
 import { reviewsRouter } from "./routes/reviews";
 import { subscriptionsRouter } from "./routes/subscriptions";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
-import { apiLimiter } from "./middleware/rateLimiters";
+import { apiLimiter, authLimiter } from "./middleware/rateLimiters";
 
 export const app = express();
 
@@ -53,23 +53,7 @@ app.use(
     ].join(" ");
   })
 );
-// Auth routes must stay reachable for login and password recovery. The scoped
-// limiter was throwing in production, so keep auth outside rate limiting until
-// a Redis/custom-store limiter is added.
-app.use("/api/auth", authRouter);
-app.use((req, res, next) => {
-  const path = req.path;
-  const hasScopedLimiter =
-    path.startsWith("/api/payments/me") ||
-    path.startsWith("/api/subscriptions/me/pay");
-
-  if (hasScopedLimiter) {
-    next();
-    return;
-  }
-
-  apiLimiter(req, res, next);
-});
+app.use(apiLimiter);
 
 app.get("/", (_req, res) => {
   res.json({
@@ -83,6 +67,7 @@ app.get("/", (_req, res) => {
 
 app.use("/api/health", healthRouter);
 app.use("/api/config", configRouter);
+app.use("/api/auth", authLimiter, authRouter);
 app.use("/api/categories", categoriesRouter);
 app.use("/api/providers", providersRouter);
 app.use("/api/favorites", favoritesRouter);

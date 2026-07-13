@@ -55,12 +55,6 @@ export const errorHandler = (error: unknown, req: Request, res: Response, _next:
     error: {
       code: "INTERNAL_SERVER_ERROR",
       message: "Unexpected server error",
-      details: req.originalUrl.startsWith("/api/auth")
-        ? {
-            name: error instanceof Error ? error.name : typeof error,
-            message: error instanceof Error ? error.message : String(error),
-          }
-        : undefined,
     },
   });
 };
