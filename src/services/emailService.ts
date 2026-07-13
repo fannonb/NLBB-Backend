@@ -417,6 +417,16 @@ const verifyResendTransport = async (): Promise<MailVerificationResult> => {
 
     const responseText = await response.text();
     if (!response.ok) {
+      if (response.status === 401 && responseText.includes("restricted_api_key")) {
+        cachedVerificationState = {
+          status: "ok",
+          checkedAt: new Date().toISOString(),
+          candidate: "resend (send-only key)",
+          reason: null,
+        };
+        return { ok: true, candidate: "resend (send-only key)" };
+      }
+
       const reason = `Resend verification failed (${response.status}): ${responseText || response.statusText}`;
       cachedVerificationState = {
         status: "failed",
