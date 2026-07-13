@@ -53,6 +53,10 @@ app.use(
     ].join(" ");
   })
 );
+// Auth routes must stay reachable for login and password recovery. The scoped
+// limiter was throwing in production, so keep auth outside rate limiting until
+// a Redis/custom-store limiter is added.
+app.use("/api/auth", authRouter);
 app.use((req, res, next) => {
   const path = req.path;
   const hasScopedLimiter =
@@ -79,7 +83,6 @@ app.get("/", (_req, res) => {
 
 app.use("/api/health", healthRouter);
 app.use("/api/config", configRouter);
-app.use("/api/auth", authRouter);
 app.use("/api/categories", categoriesRouter);
 app.use("/api/providers", providersRouter);
 app.use("/api/favorites", favoritesRouter);
