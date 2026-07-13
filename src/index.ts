@@ -21,7 +21,8 @@ async function start() {
     const email = getEmailDiagnostics();
     if (!email.configured) {
       // eslint-disable-next-line no-console
-      console.warn("[email] SMTP is not fully configured", {
+      console.warn("[email] email transport is not fully configured", {
+        provider: email.provider,
         missing: email.missing,
       });
       return;
@@ -31,16 +32,16 @@ async function start() {
       .then((result) => {
         if (result.ok) {
           // eslint-disable-next-line no-console
-          console.log(`[email] SMTP verification succeeded using ${result.candidate}`);
+          console.log(`[email] verification succeeded using ${result.candidate}`);
           return;
         }
 
         // eslint-disable-next-line no-console
-        console.error("[email] SMTP verification failed:", result.reason);
+        console.error("[email] verification failed:", result.reason);
       })
       .catch((error) => {
         // eslint-disable-next-line no-console
-        console.error("[email] SMTP verification crashed:", error);
+        console.error("[email] verification crashed:", error);
       });
   });
 }

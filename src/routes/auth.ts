@@ -327,7 +327,7 @@ authRouter.post(
 /**
  * POST /api/auth/forgot-password
  *
- * Generates a recovery link and sends it from the NLBB domain SMTP account.
+ * Generates a recovery link and sends it through the NLBB email provider.
  * Always returns 200 regardless of whether the email exists in order to
  * prevent user-enumeration attacks.
  *

@@ -46,33 +46,19 @@ These are the only values that still need to be pasted manually from your real s
 - `SUPABASE_ANON_KEY`
 - `DATABASE_URL`
 - `TRUST_PROXY=1`
+- `RESEND_API_KEY`
 - `EMAIL_FROM`
 - `EMAIL_REPLY_TO`
-- `SMTP_HOST`
-- `SMTP_PORT`
-- `SMTP_FALLBACK_PORT`
-- `SMTP_SECURE`
-- `SMTP_REQUIRE_TLS`
-- `SMTP_IGNORE_TLS`
-- `SMTP_TLS_REJECT_UNAUTHORIZED`
-- `SMTP_USER`
-- `SMTP_PASSWORD`
 
-## Recommended cPanel mail settings
+## Recommended Resend setup
 
-If you are using the cPanel mailbox you set up earlier, use:
+Use your verified domain sender in Resend, for example:
 
-- `SMTP_HOST=mail.nlbb.co.ke`
-- `SMTP_PORT=465`
-- `SMTP_FALLBACK_PORT=587`
-- `SMTP_SECURE=true`
-- `SMTP_REQUIRE_TLS=false`
-- `SMTP_IGNORE_TLS=false`
-- `SMTP_TLS_REJECT_UNAUTHORIZED=true`
 - `EMAIL_FROM=NLBB <info@nlbb.co.ke>`
 - `EMAIL_REPLY_TO=info@nlbb.co.ke`
-- `SMTP_USER=info@nlbb.co.ke`
-- `SMTP_PASSWORD=<your mailbox password>`
+- `RESEND_API_KEY=<your Resend API key>`
+
+If you want to keep SMTP only as a temporary fallback for local testing, you can still define the `SMTP_*` values in your local `.env`, but Render does not need them for the Resend path.
 
 Keep these disabled or empty for the first production deploy:
 

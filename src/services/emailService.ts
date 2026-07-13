@@ -4,18 +4,86 @@ import type SMTPTransport from "nodemailer/lib/smtp-transport";
 import { env } from "../config/env";
 import type { UserRole } from "../types/domain";
 
-const SUPPORT_EMAIL = "support@nlbb.co.ke";
+const RESEND_API_BASE_URL = "https://api.resend.com";
+const DEFAULT_CONTACT_EMAIL = "info@nlbb.co.ke";
 
-const getMissingConfig = () =>
-  [
-    !env.SMTP_HOST ? "SMTP_HOST" : null,
+const hasText = (value: string | undefined | null) => Boolean(value?.trim());
+
+const uniqueStrings = (values: Array<string | null>) => [...new Set(values.filter(Boolean) as string[])];
+
+const extractEmailAddress = (value: string | undefined | null) => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const angleMatch = trimmed.match(/<([^>]+)>/);
+  if (angleMatch?.[1]) {
+    return angleMatch[1].trim();
+  }
+
+  if (trimmed.includes("@")) {
+    return trimmed;
+  }
+
+  return null;
+};
+
+const getFromAddress = () => env.EMAIL_FROM?.trim() ?? null;
+
+const getReplyToAddress = () =>
+  env.EMAIL_REPLY_TO?.trim() ?? extractEmailAddress(env.EMAIL_FROM) ?? DEFAULT_CONTACT_EMAIL;
+
+const isResendConfigured = () => hasText(env.RESEND_API_KEY) && hasText(env.EMAIL_FROM);
+
+const isSmtpConfigured = () =>
+  hasText(env.SMTP_HOST) &&
+  Boolean(env.SMTP_PORT) &&
+  hasText(env.SMTP_USER) &&
+  hasText(env.SMTP_PASSWORD) &&
+  hasText(env.EMAIL_FROM);
+
+type EmailProvider = "resend" | "smtp" | "unconfigured";
+
+const getEmailProvider = (): EmailProvider => {
+  if (isResendConfigured()) {
+    return "resend";
+  }
+
+  if (isSmtpConfigured()) {
+    return "smtp";
+  }
+
+  return "unconfigured";
+};
+
+const getResendMissingConfig = () =>
+  uniqueStrings([
+    !hasText(env.RESEND_API_KEY) ? "RESEND_API_KEY" : null,
+    !hasText(env.EMAIL_FROM) ? "EMAIL_FROM" : null,
+  ]);
+
+const getSmtpMissingConfig = () =>
+  uniqueStrings([
+    !hasText(env.SMTP_HOST) ? "SMTP_HOST" : null,
     !env.SMTP_PORT ? "SMTP_PORT" : null,
-    !env.SMTP_USER ? "SMTP_USER" : null,
-    !env.SMTP_PASSWORD ? "SMTP_PASSWORD" : null,
-    !env.EMAIL_FROM ? "EMAIL_FROM" : null,
-  ].filter(Boolean) as string[];
+    !hasText(env.SMTP_USER) ? "SMTP_USER" : null,
+    !hasText(env.SMTP_PASSWORD) ? "SMTP_PASSWORD" : null,
+    !hasText(env.EMAIL_FROM) ? "EMAIL_FROM" : null,
+  ]);
 
-const isConfigured = () => getMissingConfig().length === 0;
+const getMissingConfig = () => {
+  const provider = getEmailProvider();
+  if (provider === "resend") {
+    return getResendMissingConfig();
+  }
+
+  if (provider === "smtp") {
+    return getSmtpMissingConfig();
+  }
+
+  return uniqueStrings([...getResendMissingConfig(), ...getSmtpMissingConfig()]);
+};
 
 const escapeHtml = (value: string) =>
   value
@@ -45,18 +113,26 @@ type SmtpCandidate = {
 
 type MailDiagnostic = {
   configured: boolean;
+  provider: EmailProvider;
   missing: string[];
-  host: string | null;
   from: string | null;
   replyTo: string | null;
-  candidates: Array<{
-    label: string;
-    port: number;
-    secure: boolean;
-    requireTLS: boolean;
-    ignoreTLS: boolean;
-    tlsRejectUnauthorized: boolean;
-  }>;
+  candidates: Array<
+    | {
+        label: string;
+        provider: "resend";
+        endpoint: string;
+      }
+    | {
+        label: string;
+        provider: "smtp";
+        port: number;
+        secure: boolean;
+        requireTLS: boolean;
+        ignoreTLS: boolean;
+        tlsRejectUnauthorized: boolean;
+      }
+  >;
 };
 
 type MailVerificationResult =
@@ -115,8 +191,8 @@ const buildTransportOptions = (port: number, secure: boolean): SMTPTransport.Opt
   },
 });
 
-const buildTransportCandidates = (): SmtpCandidate[] => {
-  if (!isConfigured()) {
+const buildSmtpCandidates = (): SmtpCandidate[] => {
+  if (!isSmtpConfigured()) {
     return [];
   }
 
@@ -190,21 +266,82 @@ const getTransporter = (candidate: SmtpCandidate) => {
   return cachedTransporter;
 };
 
-const sendEmail = async (payload: {
+const sendViaResend = async (payload: {
   to: string;
   subject: string;
   text: string;
   html: string;
 }): Promise<EmailSendResult> => {
-  const candidates = buildTransportCandidates();
+  const from = getFromAddress();
+  const apiKey = env.RESEND_API_KEY?.trim();
+  if (!from) {
+    return {
+      sent: false,
+      reason: `Resend is not configured. Missing: ${getResendMissingConfig().join(", ")}`,
+    };
+  }
+
+  if (!apiKey) {
+    return {
+      sent: false,
+      reason: `Resend is not configured. Missing: ${getResendMissingConfig().join(", ")}`,
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const response = await fetch(`${RESEND_API_BASE_URL}/emails`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: [payload.to],
+        subject: payload.subject,
+        text: payload.text,
+        html: payload.html,
+      }),
+      signal: controller.signal,
+    });
+
+    const responseText = await response.text();
+    if (!response.ok) {
+      return {
+        sent: false,
+        reason: `Resend send failed (${response.status}): ${responseText || response.statusText}`,
+      };
+    }
+
+    return { sent: true, transport: "resend" };
+  } catch (error) {
+    return {
+      sent: false,
+      reason: formatMailError(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const sendViaSmtp = async (payload: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}): Promise<EmailSendResult> => {
+  const candidates = buildSmtpCandidates();
   if (candidates.length === 0) {
     // eslint-disable-next-line no-console
     console.warn("[email] SMTP is not configured; skipping email send", {
-      missing: getMissingConfig(),
+      missing: getSmtpMissingConfig(),
     });
     return {
       sent: false,
-      reason: `SMTP is not configured. Missing: ${getMissingConfig().join(", ")}`,
+      reason: `SMTP is not configured. Missing: ${getSmtpMissingConfig().join(", ")}`,
     };
   }
 
@@ -214,10 +351,17 @@ const sendEmail = async (payload: {
     try {
       cachedTransporter = null;
       const transport = getTransporter(candidate);
+      const from = getFromAddress();
+      if (!from) {
+        return {
+          sent: false,
+          reason: `SMTP is not configured. Missing: ${getSmtpMissingConfig().join(", ")}`,
+        };
+      }
       await transport.sendMail({
-        from: env.EMAIL_FROM,
+        from,
         to: payload.to,
-        replyTo: env.EMAIL_REPLY_TO ?? SUPPORT_EMAIL,
+        replyTo: getReplyToAddress(),
         subject: payload.subject,
         text: payload.text,
         html: payload.html,
@@ -246,41 +390,75 @@ const sendEmail = async (payload: {
   };
 };
 
-export const getEmailDiagnostics = (): MailDiagnostic => {
-  const candidates = buildTransportCandidates();
-
-  return {
-    configured: isConfigured(),
-    missing: getMissingConfig(),
-    host: env.SMTP_HOST ?? null,
-    from: env.EMAIL_FROM ?? null,
-    replyTo: env.EMAIL_REPLY_TO ?? SUPPORT_EMAIL,
-    candidates: candidates.map((candidate) => ({
-      label: candidate.label,
-      port: candidate.options.port ?? 0,
-      secure: Boolean(candidate.options.secure),
-      requireTLS: Boolean(candidate.options.requireTLS),
-      ignoreTLS: Boolean(candidate.options.ignoreTLS),
-      tlsRejectUnauthorized: candidate.options.tls?.rejectUnauthorized !== false,
-    })),
-  };
-};
-
-export const getEmailVerificationState = (): MailVerificationState => cachedVerificationState;
-
-export const verifyEmailTransport = async (): Promise<MailVerificationResult> => {
-  const candidates = buildTransportCandidates();
-  if (candidates.length === 0) {
+const verifyResendTransport = async (): Promise<MailVerificationResult> => {
+  const apiKey = env.RESEND_API_KEY?.trim();
+  if (!apiKey || !getFromAddress()) {
+    const reason = `Resend is not configured. Missing: ${getResendMissingConfig().join(", ")}`;
     cachedVerificationState = {
       status: "failed",
       checkedAt: new Date().toISOString(),
       candidate: null,
-      reason: `SMTP is not configured. Missing: ${getMissingConfig().join(", ")}`,
+      reason,
     };
-    return {
-      ok: false,
-      reason: `SMTP is not configured. Missing: ${getMissingConfig().join(", ")}`,
+    return { ok: false, reason };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
+    const response = await fetch(`${RESEND_API_BASE_URL}/domains`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+    });
+
+    const responseText = await response.text();
+    if (!response.ok) {
+      const reason = `Resend verification failed (${response.status}): ${responseText || response.statusText}`;
+      cachedVerificationState = {
+        status: "failed",
+        checkedAt: new Date().toISOString(),
+        candidate: null,
+        reason,
+      };
+      return { ok: false, reason };
+    }
+
+    cachedVerificationState = {
+      status: "ok",
+      checkedAt: new Date().toISOString(),
+      candidate: "resend",
+      reason: null,
     };
+    return { ok: true, candidate: "resend" };
+  } catch (error) {
+    const reason = formatMailError(error);
+    cachedVerificationState = {
+      status: "failed",
+      checkedAt: new Date().toISOString(),
+      candidate: null,
+      reason,
+    };
+    return { ok: false, reason };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const verifySmtpTransport = async (): Promise<MailVerificationResult> => {
+  const candidates = buildSmtpCandidates();
+  if (candidates.length === 0) {
+    const reason = `SMTP is not configured. Missing: ${getSmtpMissingConfig().join(", ")}`;
+    cachedVerificationState = {
+      status: "failed",
+      checkedAt: new Date().toISOString(),
+      candidate: null,
+      reason,
+    };
+    return { ok: false, reason };
   }
 
   let lastError: unknown = null;
@@ -323,6 +501,89 @@ export const verifyEmailTransport = async (): Promise<MailVerificationResult> =>
   };
 };
 
+const sendEmail = async (payload: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}): Promise<EmailSendResult> => {
+  const provider = getEmailProvider();
+
+  if (provider === "resend") {
+    return sendViaResend(payload);
+  }
+
+  if (provider === "smtp") {
+    return sendViaSmtp(payload);
+  }
+
+  // eslint-disable-next-line no-console
+  console.warn("[email] email transport is not configured; skipping email send", {
+    missing: getMissingConfig(),
+  });
+  return {
+    sent: false,
+    reason: `Email transport is not configured. Missing: ${getMissingConfig().join(", ")}`,
+  };
+};
+
+export const getEmailDiagnostics = (): MailDiagnostic => {
+  const provider = getEmailProvider();
+
+  return {
+    configured: provider !== "unconfigured",
+    provider,
+    missing: getMissingConfig(),
+    from: getFromAddress(),
+    replyTo: getReplyToAddress(),
+    candidates:
+      provider === "resend"
+        ? [
+            {
+              label: "resend",
+              provider: "resend",
+              endpoint: "POST /emails",
+            },
+          ]
+        : buildSmtpCandidates().map((candidate) => ({
+            label: candidate.label,
+            provider: "smtp" as const,
+            port: candidate.options.port ?? 0,
+            secure: Boolean(candidate.options.secure),
+            requireTLS: Boolean(candidate.options.requireTLS),
+            ignoreTLS: Boolean(candidate.options.ignoreTLS),
+            tlsRejectUnauthorized: candidate.options.tls?.rejectUnauthorized !== false,
+          })),
+  };
+};
+
+export const getEmailVerificationState = (): MailVerificationState => cachedVerificationState;
+
+export const verifyEmailTransport = async (): Promise<MailVerificationResult> => {
+  const provider = getEmailProvider();
+
+  if (provider === "resend") {
+    return verifyResendTransport();
+  }
+
+  if (provider === "smtp") {
+    return verifySmtpTransport();
+  }
+
+  const reason = `Email transport is not configured. Missing: ${getMissingConfig().join(", ")}`;
+  cachedVerificationState = {
+    status: "failed",
+    checkedAt: new Date().toISOString(),
+    candidate: null,
+    reason,
+  };
+
+  return {
+    ok: false,
+    reason,
+  };
+};
+
 const wrapTemplate = (title: string, bodyHtml: string) => `
   <div style="margin:0;padding:0;background:#f8f5ef;font-family:Arial,Helvetica,sans-serif;color:#1f1f1f;">
     <div style="max-width:640px;margin:0 auto;padding:32px 20px;">
@@ -346,6 +607,7 @@ export const sendWelcomeEmail = async (input: {
   role: UserRole;
 }): Promise<EmailSendResult> => {
   const roleLabel = input.role === "provider" ? "Provider" : input.role === "admin" ? "Admin" : "Customer";
+  const contactEmail = getReplyToAddress();
   const subject = `Welcome to NLBB, ${input.fullName}`;
   const body = [
     paragraph(`Hi ${input.fullName},`),
@@ -353,7 +615,7 @@ export const sendWelcomeEmail = async (input: {
     input.role === "provider"
       ? paragraph("You can now complete your provider profile and wait for approval before going fully live.")
       : paragraph("You can now sign in and start using the app."),
-    paragraph(`If you need help, reply to this email or contact ${SUPPORT_EMAIL}.`),
+    paragraph(`If you need help, reply to this email or contact ${contactEmail}.`),
   ].join("");
 
   const text = [
@@ -364,7 +626,7 @@ export const sendWelcomeEmail = async (input: {
       ? "You can now complete your provider profile and wait for approval before going fully live."
       : "You can now sign in and start using the app.",
     "",
-    `If you need help, reply to this email or contact ${SUPPORT_EMAIL}.`,
+    `If you need help, reply to this email or contact ${contactEmail}.`,
   ].join("\n");
 
   return sendEmail({
@@ -376,6 +638,7 @@ export const sendWelcomeEmail = async (input: {
 };
 
 export const sendPasswordResetEmail = async (input: { to: string; resetLink: string }): Promise<EmailSendResult> => {
+  const contactEmail = getReplyToAddress();
   const subject = "Reset your NLBB password";
   const body = [
     paragraph("We received a request to reset your NLBB password."),
@@ -386,7 +649,7 @@ export const sendPasswordResetEmail = async (input: { to: string; resetLink: str
       input.resetLink
     )}" style="display:inline-block;background:#b68c18;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:999px;font-weight:700;">Reset password</a></p>`,
     paragraph(`This link is for your account only. If you did not ask for a reset, you can ignore this email.`),
-    paragraph(`Need help? Reply to this message or email ${SUPPORT_EMAIL}.`),
+    paragraph(`Need help? Reply to this message or email ${contactEmail}.`),
   ].join("");
 
   const text = [
@@ -395,7 +658,7 @@ export const sendPasswordResetEmail = async (input: { to: string; resetLink: str
     `Use this link to continue: ${input.resetLink}`,
     "",
     "If you did not ask for a reset, you can ignore this email.",
-    `Need help? Reply to this message or email ${SUPPORT_EMAIL}.`,
+    `Need help? Reply to this message or email ${contactEmail}.`,
   ].join("\n");
 
   return sendEmail({
