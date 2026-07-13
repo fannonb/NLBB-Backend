@@ -6,6 +6,7 @@ import type { Notification } from "../types/domain";
 import { getPushTokensForUser } from "./userService";
 
 const EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send";
+const EXPO_PUSH_RECEIPTS_API_URL = "https://exp.host/--/api/v2/push/getReceipts";
 
 interface CreateNotificationInput {
   userId: string;
@@ -166,6 +167,41 @@ export const sendPushNotification = async (
     const failedTickets = tickets.filter((ticket: { status?: string }) => ticket?.status === "error");
     if (failedTickets.length > 0) {
       console.warn("[push] Expo push service returned ticket errors", failedTickets);
+    }
+
+    const receiptIds = tickets
+      .map((ticket: { id?: string; status?: string }) => (ticket?.status === "ok" ? ticket.id : null))
+      .filter((id: string | null): id is string => Boolean(id));
+
+    if (receiptIds.length > 0) {
+      setTimeout(() => {
+        void axios
+          .post(
+            EXPO_PUSH_RECEIPTS_API_URL,
+            { ids: receiptIds },
+            {
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+                "Accept-encoding": "gzip, deflate",
+              },
+            }
+          )
+          .then((receiptResponse) => {
+            const receipts = receiptResponse.data?.data ?? {};
+            const failedReceipts = Object.entries(receipts).filter(([, receipt]) => {
+              const status = (receipt as { status?: string } | undefined)?.status;
+              return status && status !== "ok";
+            });
+
+            if (failedReceipts.length > 0) {
+              console.warn("[push] Expo push receipts returned errors", failedReceipts);
+            }
+          })
+          .catch((error) => {
+            console.warn("[push] Failed to fetch Expo push receipts", error);
+          });
+      }, 1500);
     }
 
     return { sent: true, attempted: validTokens.length, failedTickets: failedTickets.length };
