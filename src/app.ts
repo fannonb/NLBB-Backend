@@ -53,7 +53,20 @@ app.use(
     ].join(" ");
   })
 );
-app.use(apiLimiter);
+app.use((req, res, next) => {
+  const path = req.path;
+  const hasScopedLimiter =
+    path.startsWith("/api/auth") ||
+    path.startsWith("/api/payments/me") ||
+    path.startsWith("/api/subscriptions/me/pay");
+
+  if (hasScopedLimiter) {
+    next();
+    return;
+  }
+
+  apiLimiter(req, res, next);
+});
 
 app.get("/", (_req, res) => {
   res.json({
