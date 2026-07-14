@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { categories } from "../db/schema";
+import { DEFAULT_CATEGORY_ICONS } from "../constants/categoryIcons";
 
 /** Canonical marketplace categories; missing rows are inserted on server boot (idempotent). */
 const DEFAULT_MARKETPLACE_CATEGORIES = [
@@ -33,6 +34,7 @@ export async function ensureDefaultCategories(): Promise<void> {
       await db.insert(categories).values({
         name: row.name,
         slug: row.slug,
+        icon: DEFAULT_CATEGORY_ICONS[row.slug],
         sortOrder: row.sortOrder,
         isActive: true,
         createdAt: now,

@@ -16,6 +16,7 @@ export type ProviderListItem = Provider & { isSubscribed: boolean };
 export interface MarketplaceCategory {
   id: string;
   name: string;
+  icon: string;
   slug?: string;
   sortOrder?: number;
   isActive?: boolean;

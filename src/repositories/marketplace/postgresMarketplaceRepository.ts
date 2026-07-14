@@ -290,6 +290,7 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
         id: categories.id,
         name: categories.name,
         slug: categories.slug,
+        icon: categories.icon,
         sortOrder: categories.sortOrder,
         isActive: categories.isActive,
       })

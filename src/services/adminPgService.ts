@@ -1,16 +1,22 @@
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { getDb } from "../db/client";
 import {
   adminLogs,
   bookings,
+  categories,
   payments,
+  providerServices,
   providerSubscriptions,
   providerVerificationEvents,
   providers,
   userProfiles,
   users,
 } from "../db/schema";
+import type { CategoryIcon } from "../constants/categoryIcons";
+import { DEFAULT_CATEGORY_ICON } from "../constants/categoryIcons";
 import type { Provider, Subscription, UserRole } from "../types/domain";
+import { ApiError } from "../utils/apiError";
+import { categorySlugFromName } from "../utils/categorySlug";
 import { getAdminOverview } from "./analyticsPgService";
 
 type AdminProviderStatus = "pending" | "approved" | "suspended";
@@ -46,7 +52,7 @@ interface ProviderDoc {
 
 interface AdminLogRow {
   id: string;
-  type: "signup" | "subscription" | "verification" | "suspension" | "payment" | "dispute" | "booking";
+  type: "signup" | "subscription" | "verification" | "suspension" | "payment" | "dispute" | "booking" | "category";
   text: string;
   createdAt: string;
 }
@@ -134,6 +140,111 @@ const ACTIVITY_COLORS: Record<AdminLogRow["type"], string> = {
   payment: "#22C55E",
   dispute: "#EF4444",
   booking: "#2563EB",
+  category: "#B8962A",
+};
+
+export interface AdminCategoryInput {
+  name: string;
+  icon: CategoryIcon;
+  sortOrder?: number;
+  isActive?: boolean;
+}
+
+const categoryRecord = (
+  category: typeof categories.$inferSelect,
+  serviceCount: number
+) => ({
+  id: category.id,
+  name: category.name,
+  slug: category.slug,
+  icon: category.icon || DEFAULT_CATEGORY_ICON,
+  sortOrder: category.sortOrder,
+  isActive: category.isActive,
+  serviceCount,
+  createdAt: category.createdAt.toISOString(),
+});
+
+export const listAdminCategories = async () => {
+  const db = getDb();
+  const [categoryRows, serviceRows] = await Promise.all([
+    db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.name)),
+    db.select({ categoryId: providerServices.categoryId }).from(providerServices),
+  ]);
+  const serviceCounts = new Map<string, number>();
+  serviceRows.forEach(({ categoryId }) => {
+    if (categoryId) serviceCounts.set(categoryId, (serviceCounts.get(categoryId) ?? 0) + 1);
+  });
+  return categoryRows.map((category) => categoryRecord(category, serviceCounts.get(category.id) ?? 0));
+};
+
+export const createAdminCategory = async (payload: AdminCategoryInput, actorUid: string) => {
+  const db = getDb();
+  const name = payload.name.trim();
+  const slug = categorySlugFromName(name);
+  if (!slug) {
+    throw new ApiError(400, "Enter a valid category name.", "INVALID_CATEGORY_NAME");
+  }
+
+  const existingRows = await db.select().from(categories);
+  if (existingRows.some((row) => row.slug === slug || row.name.toLowerCase() === name.toLowerCase())) {
+    throw new ApiError(409, "A category with this name already exists.", "CATEGORY_EXISTS");
+  }
+
+  const nextSortOrder = existingRows.reduce((max, row) => Math.max(max, row.sortOrder), -1) + 1;
+  const [created] = await db
+    .insert(categories)
+    .values({
+      name,
+      slug,
+      icon: payload.icon,
+      sortOrder: payload.sortOrder ?? nextSortOrder,
+      isActive: payload.isActive ?? true,
+      createdAt: new Date(),
+    })
+    .returning();
+
+  await appendAdminLog({ type: "category", text: `${name} category created by ${actorUid}` });
+  return categoryRecord(created, 0);
+};
+
+export const updateAdminCategory = async (
+  categoryId: string,
+  payload: Partial<AdminCategoryInput>,
+  actorUid: string
+) => {
+  const db = getDb();
+  const [existing] = await db.select().from(categories).where(eq(categories.id, categoryId)).limit(1);
+  if (!existing) return null;
+
+  const name = payload.name?.trim() ?? existing.name;
+  const slug = payload.name ? categorySlugFromName(name) : existing.slug;
+  const allRows = await db.select().from(categories);
+  if (
+    allRows.some(
+      (row) => row.id !== categoryId && (row.slug === slug || row.name.toLowerCase() === name.toLowerCase())
+    )
+  ) {
+    throw new ApiError(409, "A category with this name already exists.", "CATEGORY_EXISTS");
+  }
+
+  const [updated] = await db
+    .update(categories)
+    .set({
+      name,
+      slug,
+      icon: payload.icon ?? existing.icon,
+      sortOrder: payload.sortOrder ?? existing.sortOrder,
+      isActive: payload.isActive ?? existing.isActive,
+    })
+    .where(eq(categories.id, categoryId))
+    .returning();
+  const serviceCount = await db
+    .select({ categoryId: providerServices.categoryId })
+    .from(providerServices)
+    .where(eq(providerServices.categoryId, categoryId));
+
+  await appendAdminLog({ type: "category", text: `${name} category updated by ${actorUid}` });
+  return categoryRecord(updated, serviceCount.length);
 };
 
 interface DashboardActivityEvent {

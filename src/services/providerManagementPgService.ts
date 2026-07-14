@@ -211,6 +211,30 @@ const getOrCreateCategoryId = async (name: string) => {
   return created.id;
 };
 
+const getActiveCategory = async (name: string) => {
+  const db = getDb();
+  const canonical = canonicalCategorySlug(toSlug(name));
+  const slugVariants = allSlugsForCanonical(canonical);
+  const rows = await db
+    .select()
+    .from(categories)
+    .where(and(inArray(categories.slug, slugVariants), eq(categories.isActive, true)));
+
+  const category =
+    rows.find((row) => row.slug === canonical) ??
+    rows.slice().sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))[0];
+
+  if (!category) {
+    throw new ApiError(
+      400,
+      "Select an active service category created by the administrator.",
+      "CATEGORY_NOT_AVAILABLE"
+    );
+  }
+
+  return category;
+};
+
 const loadProvider = async (providerId: string) => {
   const db = getDb();
   const [providerRow] = await db
@@ -580,12 +604,12 @@ export const addProviderService = async (
     throw new ApiError(404, "Provider profile missing", "PROVIDER_NOT_FOUND");
   }
 
-  const categoryId = payload.category ? await getOrCreateCategoryId(payload.category) : null;
+  const category = await getActiveCategory(payload.category);
   const id = payload.id ?? crypto.randomUUID();
   await db.insert(providerServices).values({
     id,
     providerId: provider.id,
-    categoryId,
+    categoryId: category.id,
     name: payload.name,
     description: payload.description,
     durationMinutes: payload.duration ?? 60,
@@ -604,7 +628,7 @@ export const addProviderService = async (
     description: payload.description,
     duration: payload.duration ?? 60,
     price: payload.price,
-    category: toCategoryName(payload.category),
+    category: category.name,
     isActive: payload.isActive ?? true,
   } satisfies Service;
 };
@@ -629,7 +653,11 @@ export const updateProviderService = async (
     throw new ApiError(404, "Service not found", "SERVICE_NOT_FOUND");
   }
 
-  const categoryId = payload.category ? await getOrCreateCategoryId(payload.category) : existing.categoryId;
+  const selectedCategory = payload.category
+    ? await getActiveCategory(payload.category)
+    : existing.categoryId
+      ? (await db.select().from(categories).where(eq(categories.id, existing.categoryId)).limit(1))[0]
+      : null;
   await db
     .update(providerServices)
     .set({
@@ -637,7 +665,7 @@ export const updateProviderService = async (
       description: payload.description ?? existing.description,
       durationMinutes: payload.duration ?? existing.durationMinutes ?? 60,
       priceAmount: (payload.price ?? Number(existing.priceAmount)).toString(),
-      categoryId,
+      categoryId: selectedCategory?.id ?? existing.categoryId,
       isActive: payload.isActive ?? existing.isActive,
       updatedAt: new Date(),
     })
@@ -651,7 +679,10 @@ export const updateProviderService = async (
     description: payload.description ?? existing.description ?? "",
     duration: payload.duration ?? existing.durationMinutes ?? 60,
     price: payload.price ?? Number(existing.priceAmount),
-    category: payload.category ? toCategoryName(payload.category) : toCategoryName(existing.name),
+    category:
+      selectedCategory?.name ??
+      provider.services.find((service) => service.id === existing.id)?.category ??
+      "General",
     isActive: payload.isActive ?? existing.isActive,
   } satisfies Service;
 };

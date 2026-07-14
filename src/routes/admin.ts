@@ -2,20 +2,69 @@ import { Router } from "express";
 import { z } from "zod";
 import { requireAdminAccess } from "../middleware/auth";
 import {
+  createAdminCategory,
   getAdminDashboardData,
   getAdminRevenueReport,
+  listAdminCategories,
   listAdminProviders,
   listAdminUsers,
   softDeleteAdminUser,
   updateAdminUserStatus,
+  updateAdminCategory,
   updateProviderAdminStatus,
   deleteAdminProvider,
 } from "../services/adminPgService";
+import { CATEGORY_ICON_VALUES } from "../constants/categoryIcons";
 import { asyncHandler } from "../utils/asyncHandler";
 
 export const adminRouter = Router();
 
 adminRouter.use(requireAdminAccess);
+
+const categoryIconSchema = z.enum(CATEGORY_ICON_VALUES);
+const categoryCreateSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  icon: categoryIconSchema,
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+  isActive: z.boolean().optional(),
+});
+const categoryUpdateSchema = categoryCreateSchema.partial().refine(
+  (payload) => Object.keys(payload).length > 0,
+  "At least one category field is required"
+);
+
+adminRouter.get(
+  "/categories",
+  asyncHandler(async (_req, res) => {
+    res.json({ success: true, data: await listAdminCategories() });
+  })
+);
+
+adminRouter.post(
+  "/categories",
+  asyncHandler(async (req, res) => {
+    const category = await createAdminCategory(categoryCreateSchema.parse(req.body), req.auth!.uid);
+    res.status(201).json({ success: true, data: category });
+  })
+);
+
+adminRouter.patch(
+  "/categories/:categoryId",
+  asyncHandler(async (req, res) => {
+    const category = await updateAdminCategory(
+      req.params.categoryId,
+      categoryUpdateSchema.parse(req.body),
+      req.auth!.uid
+    );
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        error: { code: "CATEGORY_NOT_FOUND", message: "Category not found" },
+      });
+    }
+    res.json({ success: true, data: category });
+  })
+);
 
 adminRouter.get(
   "/dashboard",

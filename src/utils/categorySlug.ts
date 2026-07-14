@@ -17,6 +17,15 @@ export function canonicalCategorySlug(slug: string): string {
   return SLUG_ALIASES[s] ?? s;
 }
 
+export function categorySlugFromName(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return canonicalCategorySlug(slug);
+}
+
 /** All DB slug values that should resolve to the same canonical category. */
 export function allSlugsForCanonical(canonical: string): string[] {
   const c = canonical.trim().toLowerCase();
