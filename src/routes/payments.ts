@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { verifyMpesaCallback } from "../middleware/callbackAuth";
-import { paymentLimiter } from "../middleware/rateLimiters";
 import { listProviderPayments, processMpesaCallback } from "../services/paymentPgService";
 import { getProviderIdByOwnerUid } from "../services/subscriptionPgService";
 import { ApiError } from "../utils/apiError";
@@ -11,7 +10,6 @@ export const paymentsRouter = Router();
 
 paymentsRouter.get(
   "/me",
-  paymentLimiter,
   requireAuth,
   requireRole("provider", "admin"),
   asyncHandler(async (req, res) => {

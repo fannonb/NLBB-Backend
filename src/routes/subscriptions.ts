@@ -3,8 +3,8 @@ import { z } from "zod";
 import { assertMpesaPaymentsEnabled } from "../config/features";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { paymentLimiter } from "../middleware/rateLimiters";
-import { getProviderIdByOwnerUid, getSubscription } from "../services/subscriptionPgService";
 import { initiateMpesaStkPush, reconcilePendingPaymentsForProvider } from "../services/paymentPgService";
+import { getProviderIdByOwnerUid, getSubscription } from "../services/subscriptionPgService";
 import { ApiError } from "../utils/apiError";
 import { asyncHandler } from "../utils/asyncHandler";
 
@@ -19,14 +19,13 @@ subscriptionsRouter.get(
     if (!providerId) {
       throw new ApiError(404, "Provider profile not found", "PROVIDER_NOT_FOUND");
     }
-    let subscription = await getSubscription(providerId);
-    const isActive =
-      subscription?.status === "active" &&
-      new Date(subscription.renewalDate).getTime() > Date.now();
-    if (!isActive) {
+
+    const shouldReconcile = req.query.reconcile === "true";
+    if (shouldReconcile) {
       await reconcilePendingPaymentsForProvider(providerId);
-      subscription = await getSubscription(providerId);
     }
+
+    const subscription = await getSubscription(providerId);
     res.json({ success: true, data: subscription });
   })
 );
