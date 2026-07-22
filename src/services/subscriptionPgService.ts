@@ -4,7 +4,7 @@ import { providerSubscriptions, providers, subscriptionPlans } from "../db/schem
 import type { Subscription, SubscriptionStatus } from "../types/domain";
 
 const DEFAULT_PLAN_CODE = "monthly";
-const DEFAULT_PLAN_AMOUNT = 1;
+const DEFAULT_PLAN_AMOUNT = 300;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 const toMoney = (value: unknown) => Number(Number(value ?? 0).toFixed(2));

@@ -15,7 +15,7 @@ export const upsertUserProfileSchema = z.object({
   name: z.string().min(2),
   email: z.string().email().optional(),
   phone: z.string().min(9),
-  role: z.enum(["customer", "provider", "admin"] as [UserRole, UserRole, UserRole]),
+  role: z.enum(["customer", "provider"] as [UserRole, UserRole]),
   location: z.string().optional(),
   avatar: z.string().url().optional(),
 });
@@ -219,12 +219,13 @@ export const upsertUserProfile = async (
   }
 
   const [existingUser] = await db.select().from(users).where(eq(users.id, uid)).limit(1);
+  const roleForWrite = existingUser?.role ?? payload.role;
   if (!existingUser) {
     await db.insert(users).values({
       id: uid,
       email: requestedEmail ?? email ?? `${uid}@nlbb.local`,
       phone: payload.phone,
-      role: payload.role,
+      role: roleForWrite,
       status: "active",
       emailVerified: false,
       createdAt: now,
@@ -236,7 +237,6 @@ export const upsertUserProfile = async (
       .set({
         email: requestedEmail ?? email ?? existingUser.email,
         phone: payload.phone,
-        role: payload.role,
         updatedAt: now,
       })
       .where(eq(users.id, uid));

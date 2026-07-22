@@ -24,6 +24,16 @@ interface PushNotificationPayload {
   actionId?: string;
 }
 
+export const notificationExistsByActionId = async (userId: string, actionId: string) => {
+  const db = getDb();
+  const [existing] = await db
+    .select({ id: notifications.id })
+    .from(notifications)
+    .where(and(eq(notifications.userId, userId), eq(notifications.actionId, actionId)))
+    .limit(1);
+  return Boolean(existing);
+};
+
 export const createNotification = async (input: CreateNotificationInput) => {
   const db = getDb();
   const [notification] = await db
@@ -40,34 +50,45 @@ export const createNotification = async (input: CreateNotificationInput) => {
     })
     .returning();
 
-  const tokens = await getPushTokensForUser(input.userId).catch(() => []);
-  console.log("[push] notification created", {
-    userId: input.userId,
-    notificationId: notification.id,
-    tokenCount: tokens.length,
-  });
-  if (tokens.length > 0) {
-    const result = await sendPushNotification(tokens, {
-      title: input.title,
-      body: input.body,
-      data: {
+  // Don't block booking/API latency on Expo push delivery.
+  void getPushTokensForUser(input.userId)
+    .then(async (tokens) => {
+      console.log("[push] notification created", {
+        userId: input.userId,
         notificationId: notification.id,
-        type: notification.type as Notification["type"],
-        actionType: (notification.actionType as Notification["actionType"] | null) ?? undefined,
-        actionId: notification.actionId ?? undefined,
-      },
+        tokenCount: tokens.length,
+      });
+      if (tokens.length === 0) {
+        console.warn("[push] no push tokens registered for user", {
+          userId: input.userId,
+          notificationId: notification.id,
+        });
+        return;
+      }
+
+      const result = await sendPushNotification(tokens, {
+        title: input.title,
+        body: input.body,
+        data: {
+          notificationId: notification.id,
+          type: notification.type as Notification["type"],
+          actionType: (notification.actionType as Notification["actionType"] | null) ?? undefined,
+          actionId: notification.actionId ?? undefined,
+        },
+      });
+      console.log("[push] notification delivery result", {
+        userId: input.userId,
+        notificationId: notification.id,
+        ...result,
+      });
+    })
+    .catch((error) => {
+      console.warn("[push] background delivery failed", {
+        userId: input.userId,
+        notificationId: notification.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
-    console.log("[push] notification delivery result", {
-      userId: input.userId,
-      notificationId: notification.id,
-      ...result,
-    });
-  } else {
-    console.warn("[push] no push tokens registered for user", {
-      userId: input.userId,
-      notificationId: notification.id,
-    });
-  }
 
   return {
     id: notification.id,

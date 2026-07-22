@@ -1,8 +1,22 @@
+import { networkInterfaces } from "node:os";
 import { app } from "./app";
 import { env } from "./config/env";
 import { initializeDatabase } from "./db/client";
 import { ensureDefaultCategories } from "./services/ensureDefaultCategories";
 import { getEmailDiagnostics, verifyEmailTransport } from "./services/emailService";
+import { startSubscriptionReminderScheduler } from "./services/subscriptionReminderService";
+
+const listLanAddresses = () => {
+  const addresses = new Set<string>();
+  for (const interfaces of Object.values(networkInterfaces())) {
+    for (const entry of interfaces ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) {
+        addresses.add(entry.address);
+      }
+    }
+  }
+  return [...addresses];
+};
 
 async function start() {
   try {
@@ -14,9 +28,21 @@ async function start() {
     process.exit(1);
   }
 
-  app.listen(env.PORT, () => {
+  app.listen(env.PORT, env.HOST, () => {
     // eslint-disable-next-line no-console
-    console.log(`NLBB backend running on http://localhost:${env.PORT}`);
+    console.log(`NLBB backend running on http://localhost:${env.PORT} (host ${env.HOST})`);
+    for (const address of listLanAddresses()) {
+      // eslint-disable-next-line no-console
+      console.log(`  reachable at http://${address}:${env.PORT}/api`);
+    }
+    if (!env.SUPABASE_JWT_SECRET && env.APP_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[auth] SUPABASE_JWT_SECRET is not set — every request verifies tokens via Supabase over the network. " +
+          "Add it from Supabase Dashboard > Project Settings > API > JWT Secret for much faster auth."
+      );
+    }
+    startSubscriptionReminderScheduler();
 
     const email = getEmailDiagnostics();
     if (!email.configured) {

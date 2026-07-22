@@ -17,7 +17,7 @@ import { allSlugsForCanonical, canonicalCategorySlug } from "../utils/categorySl
 export const providerServiceSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(2),
-  description: z.string().min(2),
+  description: z.string().trim().max(500).optional().default(""),
   duration: z.number().int().positive().optional().default(60),
   price: z.number().nonnegative(),
   category: z.string().min(2),
@@ -28,7 +28,7 @@ export const createProviderServiceSchema = providerServiceSchema.partial({ id: t
 
 export const updateProviderServiceSchema = z.object({
   name: z.string().min(2).optional(),
-  description: z.string().min(2).optional(),
+  description: z.string().trim().max(500).optional(),
   duration: z.number().int().positive().optional(),
   price: z.number().nonnegative().optional(),
   category: z.string().min(2).optional(),
@@ -336,11 +336,11 @@ const loadProvider = async (providerId: string) => {
             lng: Number(providerRow.longitude),
           }
         : undefined,
-    phone: providerRow.phone ?? undefined,
-    whatsapp: providerRow.whatsapp ?? undefined,
+    phone: providerRow.phone ?? providerRow.mpesaPhone ?? undefined,
+    whatsapp: providerRow.whatsapp ?? providerRow.phone ?? providerRow.mpesaPhone ?? undefined,
     instagram: providerRow.instagram ?? undefined,
     facebook: providerRow.facebook ?? undefined,
-    mpesaPhone: providerRow.mpesaPhone ?? undefined,
+    mpesaPhone: providerRow.mpesaPhone ?? providerRow.phone ?? undefined,
     openTime: workingHours[0]?.openTime ?? "",
     closeTime: workingHours[0]?.closeTime ?? "",
     workDays: workingHours.filter((entry) => entry.isOpen).map((entry) => entry.day).join(", "),
@@ -606,12 +606,14 @@ export const addProviderService = async (
 
   const category = await getActiveCategory(payload.category);
   const id = payload.id ?? crypto.randomUUID();
+  const description = payload.description?.trim() ?? "";
+
   await db.insert(providerServices).values({
     id,
     providerId: provider.id,
     categoryId: category.id,
     name: payload.name,
-    description: payload.description,
+    description,
     durationMinutes: payload.duration ?? 60,
     priceAmount: payload.price.toString(),
     isActive: payload.isActive ?? true,
@@ -625,7 +627,7 @@ export const addProviderService = async (
   return {
     id,
     name: payload.name,
-    description: payload.description,
+    description,
     duration: payload.duration ?? 60,
     price: payload.price,
     category: category.name,

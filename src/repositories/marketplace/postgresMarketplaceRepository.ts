@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
-import { getDb } from "../../db/client";
 import { env } from "../../config/env";
+import { getDb } from "../../db/client";
 import {
   categories,
   providerMedia,
@@ -18,7 +18,6 @@ import {
 } from "./shared";
 import type { MarketplaceCategory, MarketplaceRepository } from "./types";
 import { canonicalCategorySlug } from "../../utils/categorySlug";
-import { reconcilePendingPaymentsForProviders } from "../../services/paymentPgService";
 
 type ProviderBaseRow = {
   id: string;
@@ -44,6 +43,7 @@ type ProviderBaseRow = {
   updatedAt: Date;
   categoryName: string | null;
   categorySlug: string | null;
+  adminStatus: string;
 };
 
 const normalizeCategory = (value?: string | null) => value?.trim().toLowerCase();
@@ -70,7 +70,7 @@ const buildProviderRecord = (
   servicesByProvider: Map<string, Provider["services"]>,
   mediaByProvider: Map<string, Array<{ kind: string; url: string }>>,
   hoursByProvider: Map<string, WorkingHoursDay[]>,
-  subscriptionByProvider: Map<string, { status: string; expiresAt?: string | null }>,
+  subscriptionByProvider: Map<string, { status: string; expiresAt?: string | null; renewalDate?: string | null }>,
   currentUser?: { uid: string; role: string }
 ) => {
   const media = mediaByProvider.get(row.id) ?? [];
@@ -102,11 +102,11 @@ const buildProviderRecord = (
             lng: Number(row.longitude),
           }
         : undefined,
-    phone: row.phone ?? undefined,
-    whatsapp: row.whatsapp ?? undefined,
+    phone: row.phone ?? row.mpesaPhone ?? undefined,
+    whatsapp: row.whatsapp ?? row.phone ?? row.mpesaPhone ?? undefined,
     instagram: row.instagram ?? undefined,
     facebook: row.facebook ?? undefined,
-    mpesaPhone: row.mpesaPhone ?? undefined,
+    mpesaPhone: row.mpesaPhone ?? row.phone ?? undefined,
     openTime: primaryHours?.openTime ?? "",
     closeTime: primaryHours?.closeTime ?? "",
     workDays: openDays.map((item) => item.day).join(", "),
@@ -131,7 +131,10 @@ const buildProviderRecord = (
 const isOwnerOrAdmin = (providerOwnerUserId: string, currentUser?: { uid: string; role: string }) =>
   !!currentUser && (currentUser.uid === providerOwnerUserId || currentUser.role === "admin");
 
-const allowUnsubscribedPreview = env.NODE_ENV === "development";
+const allowUnsubscribedPreview = env.APP_ENV !== "production";
+
+const isCustomerViewer = (currentUser?: { uid: string; role: string }) =>
+  !currentUser || currentUser.role === "customer";
 
 const fetchProvidersBase = async () => {
   const db = getDb();
@@ -160,6 +163,7 @@ const fetchProvidersBase = async () => {
       updatedAt: providers.updatedAt,
       categoryName: categories.name,
       categorySlug: categories.slug,
+      adminStatus: providers.adminStatus,
     })
     .from(providers)
     .leftJoin(categories, eq(providers.categoryId, categories.id))
@@ -175,7 +179,7 @@ const fetchProviderDetails = async (providerIds: string[]) => {
       servicesByProvider: new Map<string, Provider["services"]>(),
       mediaByProvider: new Map<string, Array<{ kind: string; url: string }>>(),
       hoursByProvider: new Map<string, WorkingHoursDay[]>(),
-      subscriptionByProvider: new Map<string, { status: string; expiresAt?: string | null }>(),
+      subscriptionByProvider: new Map<string, { status: string; expiresAt?: string | null; renewalDate?: string | null }>(),
     };
   }
 
@@ -222,6 +226,7 @@ const fetchProviderDetails = async (providerIds: string[]) => {
         providerId: providerSubscriptions.providerId,
         status: providerSubscriptions.status,
         expiresAt: providerSubscriptions.expiresAt,
+        renewalAt: providerSubscriptions.renewalAt,
         createdAt: providerSubscriptions.createdAt,
       })
       .from(providerSubscriptions)
@@ -269,12 +274,16 @@ const fetchProviderDetails = async (providerIds: string[]) => {
     hoursByProvider.set(providerId, mapWorkingHours(rows));
   }
 
-  const subscriptionByProvider = new Map<string, { status: string; expiresAt?: string | null }>();
+  const subscriptionByProvider = new Map<
+    string,
+    { status: string; expiresAt?: string | null; renewalDate?: string | null }
+  >();
   for (const row of subscriptionRows) {
     if (!subscriptionByProvider.has(row.providerId)) {
       subscriptionByProvider.set(row.providerId, {
         status: row.status,
         expiresAt: row.expiresAt ? toIsoString(row.expiresAt) : null,
+        renewalDate: row.renewalAt ? toIsoString(row.renewalAt) : null,
       });
     }
   }
@@ -349,10 +358,13 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
         return false;
       }
 
+      if (!allowUnsubscribedPreview && isCustomerViewer(currentUser) && row.adminStatus !== "approved") {
+        return false;
+      }
+
       return true;
     });
 
-    await reconcilePendingPaymentsForProviders(filteredRows.map((row) => row.id));
     const details = await fetchProviderDetails(filteredRows.map((row) => row.id));
     const providersList = filteredRows.map((row) =>
       buildProviderRecord(
@@ -366,7 +378,7 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
     );
 
     const customerFacingOnlySubscribed =
-      filters.onlySubscribed ?? (allowUnsubscribedPreview ? false : !currentUser || currentUser.role === "customer");
+      filters.onlySubscribed ?? (allowUnsubscribedPreview ? false : isCustomerViewer(currentUser));
 
     return customerFacingOnlySubscribed
       ? providersList.filter((provider) => provider.isSubscribed || isOwnerOrAdmin(provider.ownerUserId, currentUser))
@@ -400,6 +412,7 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
         updatedAt: providers.updatedAt,
         categoryName: categories.name,
         categorySlug: categories.slug,
+        adminStatus: providers.adminStatus,
       })
       .from(providers)
       .leftJoin(categories, eq(providers.categoryId, categories.id))
@@ -411,7 +424,6 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
       return null;
     }
 
-    await reconcilePendingPaymentsForProviders([id]);
     const details = await fetchProviderDetails([id]);
     const provider = buildProviderRecord(
       row,
@@ -422,7 +434,21 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
       currentUser
     );
 
-    if (!allowUnsubscribedPreview && !provider.isSubscribed && !isOwnerOrAdmin(provider.ownerUserId, currentUser)) {
+    if (
+      !allowUnsubscribedPreview &&
+      isCustomerViewer(currentUser) &&
+      row.adminStatus !== "approved" &&
+      !isOwnerOrAdmin(row.ownerUserId, currentUser)
+    ) {
+      return null;
+    }
+
+    if (
+      !allowUnsubscribedPreview &&
+      isCustomerViewer(currentUser) &&
+      !provider.isSubscribed &&
+      !isOwnerOrAdmin(provider.ownerUserId, currentUser)
+    ) {
       return null;
     }
 

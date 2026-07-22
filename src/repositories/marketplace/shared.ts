@@ -28,7 +28,10 @@ export const sanitizeProvider = (
   isOwnerOrAdmin: boolean,
   isSubscribed: boolean
 ) => {
+  // Contacts stay private for guests; signed-in customers/owners can call/WhatsApp.
   const hideContacts = !signedIn && !isOwnerOrAdmin;
+  const resolvedPhone = (provider.phone ?? provider.mpesaPhone ?? "").trim() || undefined;
+  const resolvedWhatsapp = (provider.whatsapp ?? provider.phone ?? provider.mpesaPhone ?? "").trim() || undefined;
   const services = isOwnerOrAdmin
     ? provider.services
     : provider.services.filter((service) => service.isActive !== false);
@@ -36,8 +39,12 @@ export const sanitizeProvider = (
   return {
     ...provider,
     isSubscribed,
-    phone: hideContacts ? undefined : provider.phone,
-    whatsapp: hideContacts ? undefined : provider.whatsapp,
+    phone: hideContacts ? undefined : resolvedPhone,
+    whatsapp: hideContacts ? undefined : resolvedWhatsapp,
+    // Availability flags stay visible so the app can say "sign in to call" vs "no number".
+    hasPhone: Boolean(resolvedPhone),
+    hasWhatsapp: Boolean(resolvedWhatsapp),
+    contactsLocked: hideContacts,
     services,
   };
 };

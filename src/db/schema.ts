@@ -259,9 +259,13 @@ export const payments = pgTable("payments", {
   providerId: uuid("provider_id")
     .notNull()
     .references(() => providers.id, { onDelete: "cascade" }),
+  bookingId: uuid("booking_id").references(() => bookings.id, {
+    onDelete: "set null",
+  }),
   subscriptionId: uuid("subscription_id").references(() => providerSubscriptions.id, {
     onDelete: "set null",
   }),
+  purpose: varchar("purpose", { length: 32 }).notNull().default("provider_subscription"),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   currency: varchar("currency", { length: 8 }).notNull().default("KES"),
   method: varchar("method", { length: 32 }).notNull().default("mpesa"),
