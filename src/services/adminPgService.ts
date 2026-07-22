@@ -306,12 +306,10 @@ export const appendAdminLog = async (input: Omit<AdminLogRow, "id" | "createdAt"
 
 export const listAdminProviders = async (filters: ListFilters) => {
   const db = getDb();
-  const [providerRows, userRows, subscriptionRows, bookingRows] = await Promise.all([
-    db.select().from(providers),
-    db.select().from(users),
-    db.select().from(providerSubscriptions),
-    db.select().from(bookings),
-  ]);
+  const providerRows = await db.select().from(providers);
+  const userRows = await db.select().from(users);
+  const subscriptionRows = await db.select().from(providerSubscriptions);
+  const bookingRows = await db.select().from(bookings);
 
   const usersById = new Map<string, DbUser>(
     userRows.map((user) => [user.id, {
@@ -451,11 +449,9 @@ export const deleteAdminProvider = async (providerId: string, actorUid: string) 
 
 export const listAdminUsers = async (filters: ListFilters) => {
   const db = getDb();
-  const [userRows, bookingRows, profileRows] = await Promise.all([
-    db.select().from(users),
-    db.select().from(bookings),
-    db.select().from(userProfiles),
-  ]);
+  const userRows = await db.select().from(users);
+  const bookingRows = await db.select().from(bookings);
+  const profileRows = await db.select().from(userProfiles);
 
   const bookingCountByCustomer = new Map<string, number>();
   bookingRows.forEach((booking) => {
@@ -548,11 +544,9 @@ export const softDeleteAdminUser = async (userId: string, actorUid: string) => {
 
 export const getAdminRevenueReport = async () => {
   const db = getDb();
-  const [paymentRows, providerRows, subscriptionRows] = await Promise.all([
-    db.select().from(payments).orderBy(desc(payments.createdAt)),
-    db.select().from(providers),
-    db.select().from(providerSubscriptions),
-  ]);
+  const paymentRows = await db.select().from(payments).orderBy(desc(payments.createdAt));
+  const providerRows = await db.select().from(providers);
+  const subscriptionRows = await db.select().from(providerSubscriptions);
   const providerMap = new Map(providerRows.map((provider) => [provider.id, provider]));
 
   const successful = paymentRows.filter((payment) => payment.status === "success");
@@ -661,22 +655,20 @@ export const getAdminRevenueReport = async () => {
 
 export const getAdminDashboardData = async () => {
   const db = getDb();
-  const [overview, providersList, usersList, revenue, verificationEvents, recentBookings] = await Promise.all([
-    getAdminOverview(),
-    listAdminProviders({}),
-    listAdminUsers({}),
-    getAdminRevenueReport(),
-    db
-      .select()
-      .from(providerVerificationEvents)
-      .orderBy(desc(providerVerificationEvents.createdAt))
-      .limit(12),
-    db
-      .select()
-      .from(bookings)
-      .orderBy(desc(bookings.createdAt))
-      .limit(40),
-  ]);
+  const overview = await getAdminOverview();
+  const providersList = await listAdminProviders({});
+  const usersList = await listAdminUsers({});
+  const revenue = await getAdminRevenueReport();
+  const verificationEvents = await db
+    .select()
+    .from(providerVerificationEvents)
+    .orderBy(desc(providerVerificationEvents.createdAt))
+    .limit(12);
+  const recentBookings = await db
+    .select()
+    .from(bookings)
+    .orderBy(desc(bookings.createdAt))
+    .limit(40);
   const providerNameById = new Map(providersList.map((provider) => [provider.id, provider.name]));
   const customerNameById = new Map(usersList.map((user) => [user.id, user.name]));
   const activityEvents: DashboardActivityEvent[] = [];

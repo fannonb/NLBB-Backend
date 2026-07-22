@@ -1,6 +1,8 @@
 param(
   [int]$Port = 4000,
   [string]$EnvFile = "",
+  [string]$FrontendEnvFile = "",
+  [string]$WebEnvFile = "",
   [switch]$NoEnvUpdate
 )
 
@@ -8,6 +10,14 @@ $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($EnvFile)) {
   $EnvFile = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\.env"))
+}
+
+if ([string]::IsNullOrWhiteSpace($FrontendEnvFile)) {
+  $FrontendEnvFile = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\.env.local"))
+}
+
+if ([string]::IsNullOrWhiteSpace($WebEnvFile)) {
+  $WebEnvFile = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\web\.env"))
 }
 
 $cloudflared = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
@@ -34,7 +44,7 @@ if (Test-Path $errFile) { Remove-Item -LiteralPath $errFile -Force }
 $process = Start-Process `
   -WindowStyle Hidden `
   -FilePath $cloudflared.Source `
-  -ArgumentList @("tunnel", "--no-autoupdate", "--url", "http://localhost:$Port") `
+  -ArgumentList @("tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:$Port") `
   -RedirectStandardOutput $logFile `
   -RedirectStandardError $errFile `
   -PassThru
@@ -67,6 +77,7 @@ if (-not $tunnelUrl) {
 }
 
 $callbackUrl = "$tunnelUrl/api/payments/mpesa/callback"
+$apiBaseUrl = "$tunnelUrl/api"
 
 if (-not $NoEnvUpdate) {
   if (-not (Test-Path $EnvFile)) {
@@ -110,10 +121,59 @@ if (-not $NoEnvUpdate) {
   }
 
   Set-Content -LiteralPath $EnvFile -Value $newLines
+
+  if (Test-Path $FrontendEnvFile) {
+    $frontendLines = Get-Content $FrontendEnvFile
+    $apiUrlUpdated = $false
+
+    $newFrontendLines = foreach ($line in $frontendLines) {
+      if ($line -match '^EXPO_PUBLIC_API_BASE_URL=') {
+        $apiUrlUpdated = $true
+        "EXPO_PUBLIC_API_BASE_URL=$apiBaseUrl"
+      } else {
+        $line
+      }
+    }
+
+    if (-not $apiUrlUpdated) {
+      $newFrontendLines += "EXPO_PUBLIC_API_BASE_URL=$apiBaseUrl"
+    }
+
+    Set-Content -LiteralPath $FrontendEnvFile -Value $newFrontendLines
+  }
+
+  if (Test-Path $WebEnvFile) {
+    $webLines = Get-Content $WebEnvFile
+    $webApiUrlUpdated = $false
+    $webAppEnvUpdated = $false
+
+    $newWebLines = foreach ($line in $webLines) {
+      if ($line -match '^VITE_API_BASE_URL=') {
+        $webApiUrlUpdated = $true
+        "VITE_API_BASE_URL=$apiBaseUrl"
+      } elseif ($line -match '^VITE_APP_ENV=') {
+        $webAppEnvUpdated = $true
+        $line
+      } else {
+        $line
+      }
+    }
+
+    if (-not $webApiUrlUpdated) {
+      $newWebLines += "VITE_API_BASE_URL=$apiBaseUrl"
+    }
+
+    if (-not $webAppEnvUpdated) {
+      $newWebLines += "VITE_APP_ENV=development"
+    }
+
+    Set-Content -LiteralPath $WebEnvFile -Value $newWebLines
+  }
 }
 
 Write-Output "Cloudflare tunnel PID: $($process.Id)"
 Write-Output "Tunnel URL: $tunnelUrl"
+Write-Output "API base URL: $apiBaseUrl"
 Write-Output "Callback URL: $callbackUrl"
 Write-Output "Log file: $logFile"
 Write-Output "Error log: $errFile"

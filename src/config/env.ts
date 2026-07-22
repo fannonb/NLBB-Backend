@@ -7,6 +7,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   APP_ENV: z.enum(["development", "staging", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(4000),
+  HOST: z.string().default("0.0.0.0"),
   APP_BASE_URL: z.string().default("http://localhost:4000"),
   PASSWORD_RESET_REDIRECT_URL: z.string().default("nlbb://reset-password"),
   ALLOWED_ORIGINS: z.string().optional(),
@@ -47,10 +48,12 @@ const envSchema = z.object({
     .optional()
     .transform((v) => (v ?? "true").toLowerCase() !== "false"),
   DATABASE_URL: z.string().optional(),
+  DATABASE_POOL_MAX: z.coerce.number().int().positive().default(1),
   REDIS_URL: z.string().optional(),
 
   SUPABASE_URL: z.string(),
   SUPABASE_SERVICE_ROLE_KEY: z.string(),
+  SUPABASE_JWT_SECRET: z.string().optional(),
   SUPABASE_ANON_KEY: z.string().optional(),
   SUPABASE_USER_AVATAR_BUCKET: z.string().default("user-avatars"),
   SUPABASE_PROVIDER_AVATAR_BUCKET: z.string().default("provider-avatars"),

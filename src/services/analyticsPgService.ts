@@ -32,13 +32,11 @@ export const getProviderAnalytics = async (ownerUid: string) => {
 
 export const getAdminOverview = async () => {
   const db = getDb();
-  const [usersRows, providerRows, bookingRows, subscriptionRows, paymentRows] = await Promise.all([
-    db.select().from(users),
-    db.select().from(providers),
-    db.select().from(bookings),
-    db.select().from(providerSubscriptions),
-    db.select().from(payments),
-  ]);
+  const usersRows = await db.select().from(users);
+  const providerRows = await db.select().from(providers);
+  const bookingRows = await db.select().from(bookings);
+  const subscriptionRows = await db.select().from(providerSubscriptions);
+  const paymentRows = await db.select().from(payments);
 
   const activeSubscriptions = subscriptionRows.filter(
     (sub) => sub.status === "active" && (sub.expiresAt ?? sub.renewalAt ?? new Date()).getTime() > Date.now()

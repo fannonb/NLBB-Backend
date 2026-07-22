@@ -20,7 +20,7 @@ export const initializeDatabase = async () => {
   if (dbInstance) return;
 
   postgresClient = postgres(ensureDatabaseUrl(), {
-    max: 10,
+    max: env.DATABASE_POOL_MAX,
     prepare: false,
   });
 
@@ -30,7 +30,7 @@ export const initializeDatabase = async () => {
 export const getSqlClient = () => {
   if (!postgresClient) {
     postgresClient = postgres(ensureDatabaseUrl(), {
-      max: 10,
+      max: env.DATABASE_POOL_MAX,
       prepare: false,
     });
   }
