@@ -382,7 +382,7 @@ export const createBooking = async (
       { label: "Customer", value: customerProfile?.fullName?.trim() || customerId },
       { label: "Provider", value: provider.name },
       { label: "Service", value: resolvedService.name },
-      { label: "Amount", value: `Ksh ${resolvedService.price.toLocaleString()}` },
+      { label: "Listed service price", value: `Ksh ${resolvedService.price.toLocaleString()}` },
       { label: "Scheduled at", value: scheduledAtDate.toISOString() },
     ],
     footer: "Log in to the admin portal to review booking activity.",
