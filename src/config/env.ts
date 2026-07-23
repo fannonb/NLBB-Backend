@@ -48,7 +48,7 @@ const envSchema = z.object({
     .optional()
     .transform((v) => (v ?? "true").toLowerCase() !== "false"),
   DATABASE_URL: z.string().optional(),
-  DATABASE_POOL_MAX: z.coerce.number().int().positive().default(1),
+  DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
   REDIS_URL: z.string().optional(),
 
   SUPABASE_URL: z.string(),

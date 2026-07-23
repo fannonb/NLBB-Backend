@@ -8,8 +8,21 @@ const DEFAULT_PLAN_AMOUNT = 300;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 const toMoney = (value: unknown) => Number(Number(value ?? 0).toFixed(2));
-const calculateAmountDue = (planAmount: number, creditBalance: number) =>
-  Math.max(0, toMoney(planAmount - creditBalance));
+
+const resetLegacyCreditBalance = async (providerId: string, creditBalance: unknown) => {
+  if (toMoney(creditBalance) === 0) {
+    return;
+  }
+
+  const db = getDb();
+  await db
+    .update(providerSubscriptions)
+    .set({
+      creditBalance: "0",
+      updatedAt: new Date(),
+    })
+    .where(eq(providerSubscriptions.providerId, providerId));
+};
 
 const ensureDefaultPlan = async () => {
   const db = getDb();
@@ -133,15 +146,15 @@ export const getSubscription = async (providerId: string) => {
     } satisfies Subscription;
   }
 
+  await resetLegacyCreditBalance(providerId, row.creditBalance);
   const planAmount = Number(row.planPrice ?? DEFAULT_PLAN_AMOUNT);
-  const creditBalance = toMoney(row.creditBalance);
   return {
     providerId: row.providerId,
     status: row.status as SubscriptionStatus,
     renewalDate: (row.expiresAt ?? row.renewalAt ?? new Date()).toISOString(),
-    amount: calculateAmountDue(planAmount, creditBalance),
+    amount: planAmount,
     planAmount,
-    creditBalance,
+    creditBalance: 0,
     paymentMethod: "mpesa" as const,
     lastPaymentId: row.lastPaymentId ?? undefined,
     updatedAt: row.updatedAt.toISOString(),
@@ -167,7 +180,7 @@ export const upsertSubscription = async (
     renewalAt: renewalDate,
     expiresAt: renewalDate,
     lastPaymentId: options?.lastPaymentId ?? existing?.lastPaymentId ?? null,
-    creditBalance: toMoney(options?.creditBalance ?? existing?.creditBalance ?? 0).toString(),
+    creditBalance: "0",
     updatedAt: now,
   };
 
@@ -180,15 +193,14 @@ export const upsertSubscription = async (
     await db.update(providerSubscriptions).set(payload).where(eq(providerSubscriptions.providerId, providerId));
   }
 
-  const creditBalance = toMoney(options?.creditBalance ?? existing?.creditBalance ?? 0);
   const planAmount = Number(plan.priceAmount ?? DEFAULT_PLAN_AMOUNT);
   return {
     providerId,
     status,
     renewalDate: renewalDate.toISOString(),
-    amount: calculateAmountDue(planAmount, creditBalance),
+    amount: planAmount,
     planAmount,
-    creditBalance,
+    creditBalance: 0,
     paymentMethod: "mpesa" as const,
     lastPaymentId: options?.lastPaymentId ?? existing?.lastPaymentId ?? undefined,
     updatedAt: now.toISOString(),
@@ -213,15 +225,12 @@ export const applySubscriptionPayment = async (
     .where(eq(providerSubscriptions.providerId, providerId))
     .limit(1);
   const planAmount = Number(plan.priceAmount ?? DEFAULT_PLAN_AMOUNT);
-  const currentCredit = toMoney(existing?.creditBalance ?? 0);
-  const available = toMoney(currentCredit + paidAmount);
-  const nextCredit = available >= planAmount ? toMoney(available - planAmount) : available;
 
-  if (available < planAmount) {
+  if (toMoney(paidAmount) < planAmount) {
     const status = (existing?.status as SubscriptionStatus | undefined) ?? "pending";
     return upsertSubscription(providerId, status, {
       lastPaymentId: paymentId,
-      creditBalance: nextCredit,
+      creditBalance: 0,
     });
   }
 
@@ -234,7 +243,7 @@ export const applySubscriptionPayment = async (
   return upsertSubscription(providerId, "active", {
     renewalDate: new Date(baseTime + THIRTY_DAYS_MS).toISOString(),
     lastPaymentId: paymentId,
-    creditBalance: nextCredit,
+    creditBalance: 0,
   });
 };
 

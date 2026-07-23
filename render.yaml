@@ -49,6 +49,8 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: DATABASE_POOL_MAX
+        value: "10"
       - key: EMAIL_FROM
         sync: false
       - key: EMAIL_REPLY_TO
