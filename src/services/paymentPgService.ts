@@ -449,7 +449,7 @@ export const initiateMpesaStkPush = async (input: InitiatePaymentInput) => {
 
     return {
       checkoutRequestId,
-      message: "Simulated STK push sent. Complete payment will activate shortly.",
+      message: "Simulation mode is enabled. No real STK push was sent. Payment will auto-complete for testing.",
     };
   }
 
@@ -608,7 +608,7 @@ export const initiateBookingMpesaStkPush = async (input: InitiateBookingPaymentI
 
     return {
       checkoutRequestId,
-      message: "Simulated booking STK push sent. Payment will confirm shortly.",
+      message: "Simulation mode is enabled. No real STK push was sent. Booking payment will auto-complete for testing.",
       status: "pending" as const,
     };
   }

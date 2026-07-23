@@ -21,7 +21,7 @@ services:
       - key: MPESA_ENABLED
         value: "true"
       - key: MPESA_SIMULATE
-        value: "true"
+        value: "false"
       - key: PASSWORD_RESET_REDIRECT_URL
         value: nlbb://reset-password
       - key: SUPABASE_USER_AVATAR_BUCKET
