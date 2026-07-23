@@ -13,6 +13,7 @@ import {
 import type { Provider, Service, WorkingHoursDay } from "../types/domain";
 import { ApiError } from "../utils/apiError";
 import { allSlugsForCanonical, canonicalCategorySlug } from "../utils/categorySlug";
+import { resolvePublicMediaUrl } from "../utils/mediaUrl";
 
 export const providerServiceSchema = z.object({
   id: z.string().min(1),
@@ -311,9 +312,18 @@ const loadProvider = async (providerId: string) => {
       .orderBy(asc(providerWorkingHours.weekday)),
   ]);
 
-  const galleryImages = mediaRows.filter((row) => row.kind === "gallery").map((row) => row.publicUrl ?? row.storageKey);
-  const coverImage = mediaRows.find((row) => row.kind === "cover")?.publicUrl ?? null;
-  const avatar = mediaRows.find((row) => row.kind === "avatar")?.publicUrl ?? null;
+  const galleryImages = mediaRows
+    .filter((row) => row.kind === "gallery")
+    .map((row) => resolvePublicMediaUrl(row.publicUrl, row.storageKey))
+    .filter((value): value is string => Boolean(value));
+  const coverImage = (() => {
+    const row = mediaRows.find((item) => item.kind === "cover");
+    return row ? resolvePublicMediaUrl(row.publicUrl, row.storageKey) ?? null : null;
+  })();
+  const avatar = (() => {
+    const row = mediaRows.find((item) => item.kind === "avatar");
+    return row ? resolvePublicMediaUrl(row.publicUrl, row.storageKey) ?? null : null;
+  })();
   const workingHours = toWorkingHours(hourRows);
 
   const provider: Provider = {

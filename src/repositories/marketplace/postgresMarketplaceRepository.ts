@@ -18,6 +18,7 @@ import {
 } from "./shared";
 import type { MarketplaceCategory, MarketplaceRepository } from "./types";
 import { canonicalCategorySlug } from "../../utils/categorySlug";
+import { resolvePublicMediaUrl } from "../../utils/mediaUrl";
 
 type ProviderBaseRow = {
   id: string;
@@ -254,7 +255,7 @@ const fetchProviderDetails = async (providerIds: string[]) => {
     const list = mediaByProvider.get(row.providerId) ?? [];
     list.push({
       kind: row.kind,
-      url: row.publicUrl ?? row.storageKey,
+      url: resolvePublicMediaUrl(row.publicUrl, row.storageKey) ?? row.publicUrl ?? row.storageKey,
     });
     mediaByProvider.set(row.providerId, list);
   }
