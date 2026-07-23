@@ -17,9 +17,9 @@ services:
       - key: TRUST_PROXY
         value: "1"
       - key: PAYMENTS_ENABLED
-        value: "false"
+        value: "true"
       - key: MPESA_ENABLED
-        value: "false"
+        value: "true"
       - key: MPESA_SIMULATE
         value: "true"
       - key: PASSWORD_RESET_REDIRECT_URL
