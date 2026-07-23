@@ -5,6 +5,7 @@ import { getDb } from "../db/client";
 import { bookings, paymentCallbacks, paymentEvents, payments, providers } from "../db/schema";
 import type { Payment } from "../types/domain";
 import { ApiError } from "../utils/apiError";
+import { sendAdminEventEmail } from "./emailService";
 import { createNotification } from "./notificationPgService";
 import {
   applySubscriptionPayment,
@@ -175,6 +176,36 @@ const notifySuccessfulBookingPayment = async (payment: {
   ]);
 };
 
+const notifyAdminPaymentEvent = async (input: {
+  paymentId: string;
+  providerId: string;
+  purpose?: string | null;
+  bookingId?: string | null;
+  amountPaid: number;
+  success: boolean;
+  mpesaReceiptNumber?: string | null;
+}) => {
+  const purpose =
+    input.purpose === PAYMENT_PURPOSE_BOOKING ? "booking payment" : "subscription payment";
+  const statusLabel = input.success ? "successful" : "failed";
+
+  return sendAdminEventEmail({
+    subject: `NLBB admin alert: ${purpose} ${statusLabel}`,
+    title: "Payment activity update",
+    intro: `A ${purpose} was marked ${statusLabel}.`,
+    details: [
+      { label: "Payment ID", value: input.paymentId },
+      { label: "Provider ID", value: input.providerId },
+      { label: "Purpose", value: purpose },
+      { label: "Status", value: statusLabel },
+      { label: "Amount", value: `Ksh ${input.amountPaid.toLocaleString()}` },
+      { label: "Booking ID", value: input.bookingId ?? "Not applicable" },
+      { label: "M-Pesa receipt", value: input.mpesaReceiptNumber ?? "Pending / unavailable" },
+    ],
+    footer: "Open the admin portal to verify payment records and follow-up actions.",
+  });
+};
+
 const finalizePaymentStatus = async (
   payment: {
     id: string;
@@ -194,6 +225,7 @@ const finalizePaymentStatus = async (
 ) => {
   const db = getDb();
   const nextStatus = outcome.success ? "success" : "failed";
+  const amountPaid = outcome.amountPaid ?? Number((payment as { amount?: unknown }).amount ?? 0);
 
   if (payment.status === nextStatus) {
     return;
@@ -219,10 +251,9 @@ const finalizePaymentStatus = async (
     await notifySuccessfulBookingPayment({
       id: payment.id,
       bookingId: payment.bookingId,
-      amount: outcome.amountPaid ?? payment.amount,
+      amount: amountPaid || payment.amount,
     });
   } else if (outcome.success) {
-    const amountPaid = outcome.amountPaid ?? Number((payment as { amount?: unknown }).amount ?? 0);
     await applySubscriptionPayment(payment.providerId, amountPaid, payment.id);
     const [provider] = await db
       .select({ ownerUserId: providers.ownerUserId })
@@ -243,6 +274,22 @@ const finalizePaymentStatus = async (
   } else {
     await normalizeSubscriptionStatus(payment.providerId);
   }
+
+  void notifyAdminPaymentEvent({
+    paymentId: payment.id,
+    providerId: payment.providerId,
+    purpose: payment.purpose,
+    bookingId: payment.bookingId,
+    amountPaid: Number.isFinite(amountPaid) ? amountPaid : 0,
+    success: outcome.success,
+    mpesaReceiptNumber: outcome.mpesaReceiptNumber ?? null,
+  }).then((result) => {
+    if (!result.sent) {
+      console.error("[payment] admin payment alert not sent:", result.reason);
+    }
+  }).catch((error) => {
+    console.error("[payment] admin payment alert failed:", error);
+  });
 };
 
 const createPendingPayment = async (input: {

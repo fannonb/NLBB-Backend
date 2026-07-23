@@ -5,6 +5,7 @@ import { getDb } from "../db/client";
 import { bookingStatusHistory, bookings, providerServices, providers, reviews, userProfiles } from "../db/schema";
 import type { Booking, BookingStatus, Provider, UserRole } from "../types/domain";
 import { ApiError } from "../utils/apiError";
+import { sendAdminEventEmail } from "./emailService";
 import { createNotification } from "./notificationPgService";
 import { getProviderById } from "./providerService";
 
@@ -364,6 +365,33 @@ export const createBooking = async (
     type: "booking",
     actionType: "customer_bookings",
     actionId: bookingRow.id,
+  });
+
+  const [customerProfile] = await db
+    .select({ fullName: userProfiles.fullName })
+    .from(userProfiles)
+    .where(eq(userProfiles.userId, customerId))
+    .limit(1);
+
+  void sendAdminEventEmail({
+    subject: "NLBB admin alert: new booking request",
+    title: "New booking request",
+    intro: "A customer created a new booking request.",
+    details: [
+      { label: "Booking ref", value: bookingRow.referenceCode },
+      { label: "Customer", value: customerProfile?.fullName?.trim() || customerId },
+      { label: "Provider", value: provider.name },
+      { label: "Service", value: resolvedService.name },
+      { label: "Amount", value: `Ksh ${resolvedService.price.toLocaleString()}` },
+      { label: "Scheduled at", value: scheduledAtDate.toISOString() },
+    ],
+    footer: "Log in to the admin portal to review booking activity.",
+  }).then((result) => {
+    if (!result.sent) {
+      console.error("[booking] admin booking alert not sent:", result.reason);
+    }
+  }).catch((error) => {
+    console.error("[booking] admin booking alert failed:", error);
   });
 
   return enrichBooking({

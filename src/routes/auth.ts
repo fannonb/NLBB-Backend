@@ -19,7 +19,7 @@ import { ApiError } from "../utils/apiError";
 import { asyncHandler } from "../utils/asyncHandler";
 import { z } from "zod";
 import { uploadUserAvatar } from "../services/mediaStorageService";
-import { sendPasswordResetEmail, sendWelcomeEmail } from "../services/emailService";
+import { sendAdminEventEmail, sendPasswordResetEmail, sendWelcomeEmail } from "../services/emailService";
 import type { UserRole } from "../types/domain";
 
 export const authRouter = Router();
@@ -162,6 +162,26 @@ authRouter.post(
       }
     }).catch((error) => {
       console.error("[auth] welcome email failed:", error);
+    });
+
+    void sendAdminEventEmail({
+      subject: `NLBB admin alert: new ${payload.role} registration`,
+      title: "New account registration",
+      intro: `A new ${payload.role} account was created on NLBB.`,
+      details: [
+        { label: "Role", value: payload.role },
+        { label: "Name", value: payload.fullName.trim() },
+        { label: "Email", value: payload.email.trim().toLowerCase() },
+        { label: "Phone", value: payload.phone?.trim() || "Not provided" },
+        { label: "Location", value: payload.location?.trim() || "Not provided" },
+      ],
+      footer: "Log in to the admin portal to review the new account.",
+    }).then((result) => {
+      if (!result.sent) {
+        console.error("[auth] admin registration alert not sent:", result.reason);
+      }
+    }).catch((error) => {
+      console.error("[auth] admin registration alert failed:", error);
     });
 
     res.status(201).json({ success: true, data: response });

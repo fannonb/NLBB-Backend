@@ -6,6 +6,7 @@ import type { UserRole } from "../types/domain";
 
 const RESEND_API_BASE_URL = "https://api.resend.com";
 const DEFAULT_CONTACT_EMAIL = "info@nlbb.co.ke";
+const ADMIN_PORTAL_URL = "https://admin.nlbb.co.ke/login";
 
 const hasText = (value: string | undefined | null) => Boolean(value?.trim());
 
@@ -610,6 +611,51 @@ const wrapTemplate = (title: string, bodyHtml: string) => `
 `;
 
 const paragraph = (text: string) => `<p style="margin:0 0 16px;">${escapeHtml(text)}</p>`;
+const detailList = (items: Array<{ label: string; value: string }>) =>
+  `
+    <div style="margin:20px 0;padding:18px 20px;background:#f8f5ef;border:1px solid #eadfc7;border-radius:16px;">
+      ${items
+        .map(
+          (item) =>
+            `<div style="margin:0 0 10px;"><strong>${escapeHtml(item.label)}:</strong> ${escapeHtml(item.value)}</div>`
+        )
+        .join("")}
+    </div>
+  `;
+
+export const sendAdminEventEmail = async (input: {
+  subject: string;
+  title: string;
+  intro: string;
+  details: Array<{ label: string; value: string }>;
+  footer?: string;
+}) => {
+  const recipient = DEFAULT_CONTACT_EMAIL;
+  const body = [
+    paragraph(input.intro),
+    detailList(input.details),
+    `<p style="margin:24px 0;"><a href="${escapeHtml(
+      ADMIN_PORTAL_URL
+    )}" style="display:inline-block;background:#b68c18;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:999px;font-weight:700;">Open admin portal</a></p>`,
+    paragraph(input.footer ?? "Review the latest activity in the admin portal."),
+  ].join("");
+
+  const text = [
+    input.intro,
+    "",
+    ...input.details.map((item) => `${item.label}: ${item.value}`),
+    "",
+    `Admin portal: ${ADMIN_PORTAL_URL}`,
+    input.footer ?? "Review the latest activity in the admin portal.",
+  ].join("\n");
+
+  return sendEmail({
+    to: recipient,
+    subject: input.subject,
+    text,
+    html: wrapTemplate(input.title, body),
+  });
+};
 
 export const sendWelcomeEmail = async (input: {
   to: string;
