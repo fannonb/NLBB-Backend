@@ -55,6 +55,30 @@ services:
         sync: false
       - key: RESEND_API_KEY
         sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_FALLBACK_PORT
+        sync: false
+      - key: SMTP_SECURE
+        sync: false
+      - key: SMTP_REQUIRE_TLS
+        sync: false
+      - key: SMTP_IGNORE_TLS
+        sync: false
+      - key: SMTP_TLS_REJECT_UNAUTHORIZED
+        sync: false
+      - key: SMTP_CONNECTION_TIMEOUT_MS
+        sync: false
+      - key: SMTP_GREETING_TIMEOUT_MS
+        sync: false
+      - key: SMTP_SOCKET_TIMEOUT_MS
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
       - key: MPESA_ENV
         sync: false
       - key: MPESA_CONSUMER_KEY

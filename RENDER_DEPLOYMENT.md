@@ -46,11 +46,19 @@ These are the only values that still need to be pasted manually from your real s
 - `SUPABASE_ANON_KEY`
 - `DATABASE_URL`
 - `TRUST_PROXY=1`
-- `RESEND_API_KEY`
 - `EMAIL_FROM`
 - `EMAIL_REPLY_TO`
+- one email transport:
+  - `RESEND_API_KEY`
+  - or the `SMTP_*` values below
 
-## Recommended Resend setup
+## Recommended email setup
+
+Use exactly one transport in production:
+
+### Option 1: Resend
+
+Recommended if `nlbb.co.ke` is already verified in Resend.
 
 Use your verified domain sender in Resend, for example:
 
@@ -58,7 +66,49 @@ Use your verified domain sender in Resend, for example:
 - `EMAIL_REPLY_TO=info@nlbb.co.ke`
 - `RESEND_API_KEY=<your Resend API key>`
 
-If you want to keep SMTP only as a temporary fallback for local testing, you can still define the `SMTP_*` values in your local `.env`, but Render does not need them for the Resend path.
+Leave all `SMTP_*` values empty when using Resend.
+
+### Option 2: SMTP
+
+Use this if the `info@nlbb.co.ke` mailbox is hosted on cPanel, Hostinger, Zoho, Google Workspace, or another mail host and you have SMTP credentials.
+
+Required values:
+
+- `EMAIL_FROM=NLBB <info@nlbb.co.ke>`
+- `EMAIL_REPLY_TO=info@nlbb.co.ke`
+- `SMTP_HOST=<your mail host>`
+- `SMTP_PORT=465` or `587`
+- `SMTP_FALLBACK_PORT=587` or `465`
+- `SMTP_SECURE=true` for port `465`, `false` for port `587`
+- `SMTP_USER=info@nlbb.co.ke` or your sending mailbox
+- `SMTP_PASSWORD=<your mailbox password or app password>`
+
+Recommended SMTP defaults:
+
+- `SMTP_REQUIRE_TLS=false`
+- `SMTP_IGNORE_TLS=false`
+- `SMTP_TLS_REJECT_UNAUTHORIZED=true`
+- `SMTP_CONNECTION_TIMEOUT_MS=10000`
+- `SMTP_GREETING_TIMEOUT_MS=10000`
+- `SMTP_SOCKET_TIMEOUT_MS=20000`
+
+Leave `RESEND_API_KEY` empty when using SMTP.
+
+## How to verify the email setup after deploy
+
+After the backend deploy completes, open:
+
+- `/api/health`
+
+The response already includes:
+
+- `email.configured`
+- `email.missing`
+- `email.candidates`
+- `email.verification`
+
+If `email.configured` is `false`, the backend is still missing one or more required email variables.
+If `email.verification.status` is `failed`, the transport credentials or sender domain are invalid.
 
 Keep these disabled or empty for the first production deploy:
 
