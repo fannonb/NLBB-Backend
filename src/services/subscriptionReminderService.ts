@@ -2,6 +2,7 @@ import { eq, ne } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { providerSubscriptions, providers } from "../db/schema";
 import { createNotification, notificationExistsByActionId } from "./notificationPgService";
+import { enforceBookingGateForProvider } from "./providerManagementPgService";
 import { normalizeSubscriptionStatus } from "./subscriptionPgService";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -47,6 +48,7 @@ export const processSubscriptionReminders = async () => {
 
     if (remainingDays <= 0 || row.status === "expired") {
       await normalizeSubscriptionStatus(row.providerId);
+      await enforceBookingGateForProvider(row.providerId);
 
       const actionId = `subscription_expired:${cycleKey}`;
       if (!(await notificationExistsByActionId(ownerUserId, actionId))) {

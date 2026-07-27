@@ -17,7 +17,8 @@
     "seed:yes": "tsx src/scripts/seed.ts --yes",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "smoke:mpesa": "tsx src/scripts/mpesaSmokeTest.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.0",

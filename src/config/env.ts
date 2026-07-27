@@ -82,7 +82,33 @@ const envSchema = z.object({
     .transform((v) => (v ?? "true").toLowerCase() !== "false"),
 });
 
-export const env = envSchema.parse(process.env);
+const parsedEnv = envSchema.parse(process.env);
+
+const isLiveHost =
+  parsedEnv.APP_ENV === "production" ||
+  parsedEnv.NODE_ENV === "production" ||
+  parsedEnv.MPESA_ENV === "production";
+
+// Live go-live guardrails: never simulate STK on a live host, and always
+// require a callback secret in production so forged callbacks cannot activate
+// subscriptions during kill-switch/rollback windows.
+if (isLiveHost && parsedEnv.MPESA_SIMULATE) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[mpesa] MPESA_SIMULATE=true is not allowed on a live host (APP_ENV/NODE_ENV/MPESA_ENV=production). Forcing simulate off."
+  );
+}
+
+if (isLiveHost && !parsedEnv.MPESA_CALLBACK_SECRET?.trim()) {
+  throw new Error(
+    "MPESA_CALLBACK_SECRET is required on a live host (APP_ENV, NODE_ENV, or MPESA_ENV set to production)."
+  );
+}
+
+export const env = {
+  ...parsedEnv,
+  MPESA_SIMULATE: isLiveHost ? false : parsedEnv.MPESA_SIMULATE,
+};
 
 const parseTrustProxy = (value: string | undefined) => {
   if (!value?.trim()) {

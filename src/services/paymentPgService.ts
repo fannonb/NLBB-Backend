@@ -1,6 +1,7 @@
 import axios from "axios";
 import { desc, eq } from "drizzle-orm";
 import { env } from "../config/env";
+import { assertMpesaPaymentsEnabled } from "../config/features";
 import { getDb } from "../db/client";
 import { bookings, paymentCallbacks, paymentEvents, payments, providers } from "../db/schema";
 import type { Payment } from "../types/domain";
@@ -13,6 +14,7 @@ import {
   getSubscriptionAmountDue,
   normalizeSubscriptionStatus,
 } from "./subscriptionPgService";
+import { enforceBookingGateForProvider } from "./providerManagementPgService";
 
 interface InitiatePaymentInput {
   providerId: string;
@@ -275,6 +277,13 @@ const finalizePaymentStatus = async (
     await normalizeSubscriptionStatus(payment.providerId);
   }
 
+  // Enforce the booking gate after any subscription payment state change so an
+  // unpaid provider cannot keep bookings open. On success this is a no-op (the
+  // subscription is active); on failure/expiry it force-closes the toggle.
+  if (payment.purpose !== PAYMENT_PURPOSE_BOOKING) {
+    await enforceBookingGateForProvider(payment.providerId);
+  }
+
   void notifyAdminPaymentEvent({
     paymentId: payment.id,
     providerId: payment.providerId,
@@ -455,6 +464,7 @@ const queryStkPushStatus = async (checkoutRequestId: string) => {
 };
 
 export const initiateMpesaStkPush = async (input: InitiatePaymentInput) => {
+  assertMpesaPaymentsEnabled();
   const amount = input.amount ?? await getSubscriptionAmountDue(input.providerId);
   const normalizedPhoneNumber = normalizeMpesaPhoneNumber(input.phoneNumber);
 
@@ -584,6 +594,7 @@ export const initiateMpesaStkPush = async (input: InitiatePaymentInput) => {
 };
 
 export const initiateBookingMpesaStkPush = async (input: InitiateBookingPaymentInput) => {
+  assertMpesaPaymentsEnabled();
   const db = getDb();
   const [booking] = await db
     .select()
@@ -879,7 +890,8 @@ export const reconcilePendingPaymentsForProvider = async (providerId: string) =>
     }
 
     // Dev/simulate payments: finalize as soon as the client polls for status.
-    if (payment.checkoutRequestId.startsWith("SIM-") || env.MPESA_SIMULATE) {
+    // Never auto-succeed leftover SIM-* rows once we are in a real environment.
+    if (env.MPESA_SIMULATE) {
       await finalizePaymentStatus(payment, {
         success: true,
         amountPaid: Number(payment.amount),
@@ -927,6 +939,9 @@ export const reconcilePendingPaymentsForProvider = async (providerId: string) =>
   }
 
   await normalizeSubscriptionStatus(providerId);
+  // After reconciliation may mark a subscription expired, ensure the booking
+  // toggle is closed for an unpaid provider.
+  await enforceBookingGateForProvider(providerId);
 };
 
 export const reconcilePendingPaymentsForProviders = async (providerIds: string[]) => {

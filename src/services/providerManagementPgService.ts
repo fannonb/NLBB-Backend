@@ -14,6 +14,7 @@ import type { Provider, Service, WorkingHoursDay } from "../types/domain";
 import { ApiError } from "../utils/apiError";
 import { allSlugsForCanonical, canonicalCategorySlug } from "../utils/categorySlug";
 import { resolvePublicMediaUrl } from "../utils/mediaUrl";
+import { getSubscription, subscriptionIsActive } from "./subscriptionPgService";
 
 export const providerServiceSchema = z.object({
   id: z.string().min(1),
@@ -510,7 +511,7 @@ export const upsertProviderProfile = async (
         ratingAvg: "0",
         reviewCount: 0,
         isVerified: false,
-        isOpen: true,
+        isOpen: false,
         adminStatus: "pending",
         createdAt: now,
         updatedAt: now,
@@ -766,6 +767,19 @@ export const setProviderOpenState = async (providerId: string, isOpen: boolean) 
     throw new ApiError(404, "Provider not found", "PROVIDER_NOT_FOUND");
   }
 
+  // Booking-session gate: a provider cannot open bookings until the subscription
+  // is active and not expired. Closing is always allowed.
+  if (isOpen) {
+    const subscription = await getSubscription(providerId);
+    if (!subscriptionIsActive(subscription)) {
+      throw new ApiError(
+        403,
+        "Activate your subscription before opening bookings.",
+        "SUBSCRIPTION_INACTIVE"
+      );
+    }
+  }
+
   await db
     .update(providers)
     .set({ isOpen, updatedAt: new Date() })
@@ -773,6 +787,33 @@ export const setProviderOpenState = async (providerId: string, isOpen: boolean) 
 
   const { id: _existingId, ...rest } = existing;
   return { ...rest, id: providerId, isOpen };
+};
+
+/**
+ * Force-close a provider's booking session when the subscription is no longer
+ * active (pending, failed, or expired). Called after subscription state
+ * transitions so the booking toggle cannot stay open on an unpaid account.
+ */
+export const enforceBookingGateForProvider = async (providerId: string) => {
+  const db = getDb();
+  const [existing] = await db.select().from(providers).where(eq(providers.id, providerId)).limit(1);
+  if (!existing) {
+    return;
+  }
+
+  const subscription = await getSubscription(providerId);
+  if (subscriptionIsActive(subscription)) {
+    return;
+  }
+
+  if (!existing.isOpen) {
+    return;
+  }
+
+  await db
+    .update(providers)
+    .set({ isOpen: false, updatedAt: new Date() })
+    .where(eq(providers.id, providerId));
 };
 
 export const updateProviderRegistrationDetails = async (
