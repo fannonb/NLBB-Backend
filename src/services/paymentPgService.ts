@@ -99,6 +99,35 @@ const getCallbackUrl = () => {
   return `${callbackUrl}${separator}callbackToken=${encodeURIComponent(env.MPESA_CALLBACK_SECRET)}`;
 };
 
+/**
+ * AccountReference is shown on the STK prompt as "Account no.".
+ * Prefer the registered business name; fall back to a short provider id.
+ * Daraja docs list a 12-char limit, but production already accepts longer values
+ * (we previously sent UUIDs). Cap at 50 for safety while keeping names readable.
+ */
+const toMpesaAccountReference = (businessName: string | null | undefined, fallbackId: string) => {
+  const cleaned = (businessName ?? "")
+    .replace(/[^\p{L}\p{N}\s&.'-]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (cleaned) {
+    return cleaned.slice(0, 50);
+  }
+
+  return fallbackId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "NLBB";
+};
+
+const getProviderBusinessName = async (providerId: string) => {
+  const db = getDb();
+  const [row] = await db
+    .select({ name: providers.name })
+    .from(providers)
+    .where(eq(providers.id, providerId))
+    .limit(1);
+  return row?.name ?? null;
+};
+
 const formatTimestamp = () => {
   const d = new Date();
   const yyyy = d.getFullYear();
@@ -520,6 +549,8 @@ export const initiateMpesaStkPush = async (input: InitiatePaymentInput) => {
   const timestamp = formatTimestamp();
   const password = Buffer.from(`${MPESA_SHORTCODE}${MPESA_PASSKEY}${timestamp}`).toString("base64");
   const token = await getMpesaAccessToken();
+  const businessName = await getProviderBusinessName(input.providerId);
+  const accountReference = toMpesaAccountReference(businessName, input.providerId);
 
   let response: {
     data: {
@@ -550,8 +581,8 @@ export const initiateMpesaStkPush = async (input: InitiatePaymentInput) => {
         PartyB: MPESA_SHORTCODE,
         PhoneNumber: normalizedPhoneNumber,
         CallBackURL: getCallbackUrl(),
-        AccountReference: input.providerId,
-        TransactionDesc: "NLBB Monthly Subscription",
+        AccountReference: accountReference,
+        TransactionDesc: "NLBB Subscription",
       },
       { headers: { Authorization: `Bearer ${token}` }, timeout: 15_000, proxy: false }
     );
