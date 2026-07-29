@@ -36,7 +36,25 @@ interface CachedAuthEntry {
 }
 
 const authCache = new Map<string, CachedAuthEntry>();
+const userCache = new Map<string, CachedAuthEntry>();
 const authInflight = new Map<string, Promise<AuthenticatedUser>>();
+
+const getCachedUser = (uid: string) => {
+  const cached = userCache.get(uid);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.user;
+  }
+  return null;
+};
+
+const rememberAuthenticatedUser = (token: string, user: AuthenticatedUser) => {
+  const entry = {
+    user,
+    expiresAt: Date.now() + AUTH_CACHE_TTL_MS,
+  };
+  authCache.set(token, entry);
+  userCache.set(user.uid, entry);
+};
 
 const extractBearerToken = (authorization?: string) => {
   if (!authorization) {
@@ -70,6 +88,16 @@ const loadAuthenticatedUser = async (uid: string, email: string, sessionId: stri
 
   if (user.status === "disabled") {
     throw new ApiError(403, "Account is disabled", "ACCOUNT_DISABLED");
+  }
+
+  if (user.role === "admin") {
+    return {
+      uid: user.id,
+      email: user.email || email,
+      role: "admin",
+      status: user.status as "active" | "disabled",
+      sessionId,
+    } satisfies AuthenticatedUser;
   }
 
   if (user.role === "customer") {
@@ -123,15 +151,20 @@ const getSupabaseUserWithTimeout = async (token: string) => {
 const resolveAccessTokenUncached = async (token: string): Promise<AuthenticatedUser> => {
   if (env.SUPABASE_JWT_SECRET) {
     const claims = verifySupabaseAccessToken(token, env.SUPABASE_JWT_SECRET);
-    if (!claims) {
-      throw new ApiError(401, "Invalid or expired token", "UNAUTHORIZED");
-    }
+    if (claims) {
+      const cachedUser = getCachedUser(claims.sub);
+      if (cachedUser) {
+        return cachedUser;
+      }
 
-    return loadAuthenticatedUser(
-      claims.sub,
-      claims.email ?? `${claims.sub}@nlbb.local`,
-      claims.session_id ?? claims.sub
-    );
+      return loadAuthenticatedUser(
+        claims.sub,
+        claims.email ?? `${claims.sub}@nlbb.local`,
+        claims.session_id ?? claims.sub
+      );
+    }
+    // Newer Supabase projects sign access tokens with ECC keys. When local HS256
+    // verification fails, fall back to Supabase so auth still works.
   }
 
   const { data: { user: supabaseUser }, error } = await getSupabaseUserWithTimeout(token);
@@ -170,10 +203,7 @@ export const resolveAccessToken = async (authorization?: string): Promise<Authen
 
   const pending = resolveAccessTokenUncached(token)
     .then((user) => {
-      authCache.set(token, {
-        user,
-        expiresAt: Date.now() + AUTH_CACHE_TTL_MS,
-      });
+      rememberAuthenticatedUser(token, user);
       return user;
     })
     .finally(() => {

@@ -35,11 +35,11 @@ async function start() {
       // eslint-disable-next-line no-console
       console.log(`  reachable at http://${address}:${env.PORT}/api`);
     }
-    if (!env.SUPABASE_JWT_SECRET && env.APP_ENV !== "production") {
+    if (!env.SUPABASE_JWT_SECRET) {
       // eslint-disable-next-line no-console
       console.warn(
         "[auth] SUPABASE_JWT_SECRET is not set — every request verifies tokens via Supabase over the network. " +
-          "Add it from Supabase Dashboard > Project Settings > API > JWT Secret for much faster auth."
+          "Add it from Supabase Dashboard > Project Settings > API > JWT Secret for much faster admin actions."
       );
     }
     startSubscriptionReminderScheduler();

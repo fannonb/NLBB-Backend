@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireAdminAccess } from "../middleware/auth";
 import {
   createAdminCategory,
+  deleteAdminCategory,
   getAdminDashboardData,
   getAdminRevenueReport,
   listAdminCategories,
@@ -63,6 +64,20 @@ adminRouter.patch(
       });
     }
     res.json({ success: true, data: category });
+  })
+);
+
+adminRouter.delete(
+  "/categories/:categoryId",
+  asyncHandler(async (req, res) => {
+    const result = await deleteAdminCategory(req.params.categoryId, req.auth!.uid);
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        error: { code: "CATEGORY_NOT_FOUND", message: "Category not found" },
+      });
+    }
+    res.json({ success: true, data: result });
   })
 );
 

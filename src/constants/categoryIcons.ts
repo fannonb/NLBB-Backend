@@ -13,6 +13,20 @@ export const CATEGORY_ICON_VALUES = [
   "needle",
   "leaf-circle-outline",
   "star-four-points-outline",
+  "content-cut",
+  "razor",
+  "perfume",
+  "mirror",
+  "tooth",
+  "emoticon-happy-outline",
+  "hand-wave",
+  "yoga",
+  "dumbbell",
+  "heart-pulse",
+  "baby-carriage",
+  "gender-female",
+  "palette",
+  "camera",
 ] as const;
 
 export type CategoryIcon = (typeof CATEGORY_ICON_VALUES)[number];
@@ -32,4 +46,10 @@ export const DEFAULT_CATEGORY_ICONS: Record<string, CategoryIcon> = {
   waxing: "flower-outline",
   lashes: "eye-outline",
   piercing: "needle",
+  perfume: "perfume",
+  dental: "tooth",
+  fitness: "dumbbell",
+  yoga: "yoga",
+  skincare: "emoticon-happy-outline",
+  photography: "camera",
 };

@@ -16,23 +16,30 @@ const ensureDatabaseUrl = () => {
   return env.DATABASE_URL;
 };
 
+const createPostgresClient = () =>
+  postgres(ensureDatabaseUrl(), {
+    max: env.DATABASE_POOL_MAX,
+    // Required for Supabase pooler (PgBouncer transaction/session modes).
+    prepare: false,
+    // Fail fast instead of hanging ~30s on a cold or dropped pooler connection.
+    connect_timeout: 10,
+    idle_timeout: 20,
+    max_lifetime: 60 * 30,
+  });
+
 export const initializeDatabase = async () => {
   if (dbInstance) return;
 
-  postgresClient = postgres(ensureDatabaseUrl(), {
-    max: env.DATABASE_POOL_MAX,
-    prepare: false,
-  });
-
+  postgresClient = createPostgresClient();
   dbInstance = drizzle(postgresClient, { schema });
+
+  // Warm the pool so the first admin action does not pay connection setup cost.
+  await postgresClient`select 1`;
 };
 
 export const getSqlClient = () => {
   if (!postgresClient) {
-    postgresClient = postgres(ensureDatabaseUrl(), {
-      max: env.DATABASE_POOL_MAX,
-      prepare: false,
-    });
+    postgresClient = createPostgresClient();
   }
   return postgresClient;
 };

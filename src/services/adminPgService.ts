@@ -1,4 +1,4 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, and, count, desc, eq, max, ne, or, sql } from "drizzle-orm";
 import { getDb } from "../db/client";
 import {
   adminLogs,
@@ -164,15 +164,41 @@ const categoryRecord = (
   createdAt: category.createdAt.toISOString(),
 });
 
+export const appendAdminLog = async (input: Omit<AdminLogRow, "id" | "createdAt"> & { createdAt?: string }) => {
+  const db = getDb();
+  await db.insert(adminLogs).values({
+    actorUserId: null,
+    targetType: "system",
+    targetId: "system",
+    action: input.type,
+    summary: input.text,
+    createdAt: input.createdAt ? new Date(input.createdAt) : new Date(),
+  });
+};
+
+const queueAdminLog = (input: Omit<AdminLogRow, "id" | "createdAt"> & { createdAt?: string }) => {
+  void appendAdminLog(input).catch((error) => {
+    // eslint-disable-next-line no-console
+    console.error("[adminLog] write failed:", error);
+  });
+};
+
 export const listAdminCategories = async () => {
   const db = getDb();
-  const [categoryRows, serviceRows] = await Promise.all([
+  const [categoryRows, serviceCountRows] = await Promise.all([
     db.select().from(categories).orderBy(asc(categories.sortOrder), asc(categories.name)),
-    db.select({ categoryId: providerServices.categoryId }).from(providerServices),
+    db
+      .select({
+        categoryId: providerServices.categoryId,
+        total: count(),
+      })
+      .from(providerServices)
+      .where(sql`${providerServices.categoryId} is not null`)
+      .groupBy(providerServices.categoryId),
   ]);
   const serviceCounts = new Map<string, number>();
-  serviceRows.forEach(({ categoryId }) => {
-    if (categoryId) serviceCounts.set(categoryId, (serviceCounts.get(categoryId) ?? 0) + 1);
+  serviceCountRows.forEach(({ categoryId, total }) => {
+    if (categoryId) serviceCounts.set(categoryId, Number(total));
   });
   return categoryRows.map((category) => categoryRecord(category, serviceCounts.get(category.id) ?? 0));
 };
@@ -185,12 +211,17 @@ export const createAdminCategory = async (payload: AdminCategoryInput, actorUid:
     throw new ApiError(400, "Enter a valid category name.", "INVALID_CATEGORY_NAME");
   }
 
-  const existingRows = await db.select().from(categories);
-  if (existingRows.some((row) => row.slug === slug || row.name.toLowerCase() === name.toLowerCase())) {
+  const [duplicate] = await db
+    .select({ id: categories.id })
+    .from(categories)
+    .where(or(eq(categories.slug, slug), sql`lower(${categories.name}) = ${name.toLowerCase()}`))
+    .limit(1);
+  if (duplicate) {
     throw new ApiError(409, "A category with this name already exists.", "CATEGORY_EXISTS");
   }
 
-  const nextSortOrder = existingRows.reduce((max, row) => Math.max(max, row.sortOrder), -1) + 1;
+  const [sortRow] = await db.select({ value: max(categories.sortOrder) }).from(categories);
+  const nextSortOrder = (sortRow?.value ?? -1) + 1;
   const [created] = await db
     .insert(categories)
     .values({
@@ -203,7 +234,7 @@ export const createAdminCategory = async (payload: AdminCategoryInput, actorUid:
     })
     .returning();
 
-  await appendAdminLog({ type: "category", text: `${name} category created by ${actorUid}` });
+  queueAdminLog({ type: "category", text: `${name} category created by ${actorUid}` });
   return categoryRecord(created, 0);
 };
 
@@ -218,13 +249,20 @@ export const updateAdminCategory = async (
 
   const name = payload.name?.trim() ?? existing.name;
   const slug = payload.name ? categorySlugFromName(name) : existing.slug;
-  const allRows = await db.select().from(categories);
-  if (
-    allRows.some(
-      (row) => row.id !== categoryId && (row.slug === slug || row.name.toLowerCase() === name.toLowerCase())
-    )
-  ) {
-    throw new ApiError(409, "A category with this name already exists.", "CATEGORY_EXISTS");
+  if (payload.name) {
+    const [duplicate] = await db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(
+        and(
+          ne(categories.id, categoryId),
+          or(eq(categories.slug, slug), sql`lower(${categories.name}) = ${name.toLowerCase()}`)
+        )
+      )
+      .limit(1);
+    if (duplicate) {
+      throw new ApiError(409, "A category with this name already exists.", "CATEGORY_EXISTS");
+    }
   }
 
   const [updated] = await db
@@ -238,13 +276,51 @@ export const updateAdminCategory = async (
     })
     .where(eq(categories.id, categoryId))
     .returning();
-  const serviceCount = await db
-    .select({ categoryId: providerServices.categoryId })
+  const [serviceCountRow] = await db
+    .select({ total: count() })
     .from(providerServices)
     .where(eq(providerServices.categoryId, categoryId));
 
-  await appendAdminLog({ type: "category", text: `${name} category updated by ${actorUid}` });
-  return categoryRecord(updated, serviceCount.length);
+  queueAdminLog({ type: "category", text: `${name} category updated by ${actorUid}` });
+  return categoryRecord(updated, Number(serviceCountRow?.total ?? 0));
+};
+
+export const deleteAdminCategory = async (categoryId: string, actorUid: string) => {
+  const db = getDb();
+  const [existing] = await db.select().from(categories).where(eq(categories.id, categoryId)).limit(1);
+  if (!existing) {
+    return null;
+  }
+
+  if (existing.isActive) {
+    throw new ApiError(
+      400,
+      "Deactivate this category before deleting it.",
+      "CATEGORY_MUST_BE_INACTIVE"
+    );
+  }
+
+  const [linkedServices] = await db
+    .select({ total: count() })
+    .from(providerServices)
+    .where(eq(providerServices.categoryId, categoryId));
+
+  const linkedCount = Number(linkedServices?.total ?? 0);
+  if (linkedCount > 0) {
+    throw new ApiError(
+      409,
+      `This category is still linked to ${linkedCount} service${linkedCount === 1 ? "" : "s"}. Reassign or remove those services before deleting.`,
+      "CATEGORY_IN_USE"
+    );
+  }
+
+  await db.delete(categories).where(eq(categories.id, categoryId));
+  queueAdminLog({
+    type: "category",
+    text: `${existing.name} category permanently deleted by ${actorUid}`,
+  });
+
+  return { id: categoryId, deleted: true };
 };
 
 interface DashboardActivityEvent {
@@ -289,18 +365,6 @@ const pushActivity = (
     type: input.type,
     text: input.text,
     createdAtMs,
-  });
-};
-
-export const appendAdminLog = async (input: Omit<AdminLogRow, "id" | "createdAt"> & { createdAt?: string }) => {
-  const db = getDb();
-  await db.insert(adminLogs).values({
-    actorUserId: null,
-    targetType: "system",
-    targetId: "system",
-    action: input.type,
-    summary: input.text,
-    createdAt: input.createdAt ? new Date(input.createdAt) : new Date(),
   });
 };
 
@@ -418,30 +482,17 @@ export const deleteAdminProvider = async (providerId: string, actorUid: string) 
   if (!provider) {
     return null;
   }
-  if (provider.adminStatus === "deleted") {
-    return { id: providerId, deleted: true };
+
+  if (provider.ownerUserId === actorUid) {
+    throw new ApiError(400, "You cannot permanently delete your own account.", "CANNOT_DELETE_SELF");
   }
 
-  await db.transaction(async (tx) => {
-    await tx
-      .update(users)
-      .set({ status: "disabled", updatedAt: new Date() })
-      .where(eq(users.id, provider.ownerUserId));
-
-    await tx
-      .update(providers)
-      .set({
-        adminStatus: "deleted",
-        isVerified: false,
-        isOpen: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(providers.id, providerId));
-  });
+  // Permanent wipe: deleting the owner cascades provider rows and related data.
+  await db.delete(users).where(eq(users.id, provider.ownerUserId));
 
   await appendAdminLog({
     type: "suspension",
-    text: `${provider.name} provider account deleted by ${actorUid}`,
+    text: `${provider.name} provider account permanently deleted by ${actorUid}`,
   });
 
   return { id: providerId, deleted: true };
@@ -519,28 +570,37 @@ export const updateAdminUserStatus = async (
   return { ...restUser, id: userId, status };
 };
 
-export const softDeleteAdminUser = async (userId: string, actorUid: string) => {
+export const hardDeleteAdminUser = async (userId: string, actorUid: string) => {
   const db = getDb();
   const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!user) {
     return null;
   }
 
-  await db
-    .update(users)
-    .set({
-      status: "disabled",
-      updatedAt: new Date(),
-    })
-    .where(eq(users.id, userId));
+  if (userId === actorUid) {
+    throw new ApiError(400, "You cannot permanently delete your own account.", "CANNOT_DELETE_SELF");
+  }
+
+  if (user.role === "admin") {
+    const adminRows = await db.select({ id: users.id }).from(users).where(eq(users.role, "admin"));
+    if (adminRows.length <= 1) {
+      throw new ApiError(400, "Cannot delete the last admin account.", "LAST_ADMIN");
+    }
+  }
+
+  // Permanent wipe — related profile/booking/favorite rows cascade from users.
+  await db.delete(users).where(eq(users.id, userId));
 
   await appendAdminLog({
     type: "suspension",
-    text: `${user.email} account marked deleted by ${actorUid}`,
+    text: `${user.email ?? userId} account permanently deleted by ${actorUid}`,
   });
 
   return { id: userId, deleted: true };
 };
+
+/** @deprecated Use hardDeleteAdminUser — kept as alias for route compatibility. */
+export const softDeleteAdminUser = hardDeleteAdminUser;
 
 export const getAdminRevenueReport = async () => {
   const db = getDb();
@@ -567,12 +627,17 @@ export const getAdminRevenueReport = async () => {
     monthlyTotals.set(key, (monthlyTotals.get(key) ?? 0) + Number(payment.amount));
   });
 
-  const monthlyRevenue = Array.from({ length: 6 }, (_, idx) => {
-    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5 + idx, 1));
+  const monthlyRevenue = Array.from({ length: 12 }, (_, idx) => {
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11 + idx, 1));
     const key = monthKey(monthStart);
+    const amount = monthlyTotals.get(key) ?? 0;
     return {
-      month: monthStart.toLocaleDateString("en-US", { month: "short" }),
-      amount: monthlyTotals.get(key) ?? 0,
+      month: monthStart.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" }),
+      monthShort: monthStart.toLocaleDateString("en-US", { month: "short", timeZone: "UTC" }),
+      year: monthStart.getUTCFullYear(),
+      monthIndex: monthStart.getUTCMonth(),
+      amount,
+      amountFormatted: formatMoneyKes(amount),
     };
   });
 
@@ -624,18 +689,28 @@ export const getAdminRevenueReport = async () => {
     return subscription.status === "active" && !!expiry && expiry.getTime() > Date.now();
   }).length;
 
-  const paymentHistory = paymentRows.slice(0, 50).map((payment) => {
-    const provider = providerMap.get(payment.providerId);
-    return {
-      id: payment.id,
-      provider: provider?.name ?? payment.providerId,
-      plan: getPlanLabel(Number(payment.amount)),
-      amount: formatMoneyKes(Number(payment.amount)),
-      amountRaw: Number(payment.amount),
-      date: formatDate(payment.createdAt),
-      status: payment.status,
-    };
-  });
+  const twelveMonthsAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1));
+
+  const paymentHistory = paymentRows
+    .filter((payment) => payment.createdAt >= twelveMonthsAgo)
+    .map((payment) => {
+      const provider = providerMap.get(payment.providerId);
+      return {
+        id: payment.id,
+        provider: provider?.name ?? payment.providerId,
+        plan: getPlanLabel(Number(payment.amount)),
+        amount: formatMoneyKes(Number(payment.amount)),
+        amountRaw: Number(payment.amount),
+        date: formatDate(payment.createdAt),
+        createdAt: payment.createdAt.toISOString(),
+        year: payment.createdAt.getUTCFullYear(),
+        monthIndex: payment.createdAt.getUTCMonth(),
+        status: payment.status,
+        phoneNumber: payment.phoneNumber ?? null,
+        mpesaReceiptNumber: payment.mpesaReceiptNumber ?? null,
+        method: payment.method ?? "mpesa",
+      };
+    });
 
   return {
     summary: {
