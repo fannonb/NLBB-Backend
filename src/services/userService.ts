@@ -2,6 +2,8 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db/client";
 import { providers, pushTokens, userPreferences, userProfiles, users } from "../db/schema";
+import { createSupabaseAuthClient } from "../lib/supabaseAuth";
+import { supabaseAdmin } from "../lib/supabase";
 import type { UserRole } from "../types/domain";
 import { ApiError } from "../utils/apiError";
 import type { User } from "@supabase/supabase-js";
@@ -535,4 +537,35 @@ export const upsertUserPreferences = async (
   }
 
   return getUserPreferences(uid);
+};
+
+export const deleteUserAccount = async (uid: string, email: string, password: string) => {
+  const record = await getUserWithProfile(uid);
+  if (!record) {
+    throw new ApiError(404, "Account not found", "USER_NOT_FOUND");
+  }
+
+  if (record.user.role === "admin") {
+    throw new ApiError(403, "Admin accounts cannot be deleted through the app", "ADMIN_DELETE_BLOCKED");
+  }
+
+  const authClient = createSupabaseAuthClient();
+  const { error: verifyError } = await authClient.auth.signInWithPassword({
+    email: email.trim().toLowerCase(),
+    password,
+  });
+
+  if (verifyError) {
+    throw new ApiError(401, "Password is incorrect", "INVALID_CREDENTIALS");
+  }
+
+  const db = getDb();
+  await db.delete(users).where(eq(users.id, uid));
+
+  const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(uid);
+  if (deleteError) {
+    throw new ApiError(500, "Could not complete account deletion", "DELETE_FAILED");
+  }
+
+  return { deleted: true as const };
 };

@@ -114,7 +114,7 @@ const getSubStatus = (subscription?: { status?: string; renewalAt?: Date | null;
 };
 
 const getPlanLabel = (amount: number) => {
-  if (amount === 300) return "Monthly";
+  if (amount === 500) return "Monthly";
   if (amount === 900) return "Quarterly";
   if (amount === 3600) return "Annual";
   return "Custom";
@@ -412,7 +412,7 @@ export const listAdminProviders = async (filters: ListFilters) => {
         email: owner?.email ?? "-",
         status,
         subscriptionStatus: subStatus,
-        subscriptionPlan: subscription ? getPlanLabel(Number(subscription.status === "active" ? 300 : 300)) : undefined,
+        subscriptionPlan: subscription ? getPlanLabel(Number(subscription.status === "active" ? 500 : 500)) : undefined,
         bookingsCount: bookingsByProvider.get(provider.id) ?? 0,
         rating: Number(provider.ratingAvg ?? 0),
         avatar: DEFAULT_AVATAR,

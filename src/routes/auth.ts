@@ -14,6 +14,7 @@ import {
   upsertUserPreferencesSchema,
   upsertUserProfile,
   upsertUserProfileSchema,
+  deleteUserAccount,
 } from "../services/userService";
 import { ApiError } from "../utils/apiError";
 import { asyncHandler } from "../utils/asyncHandler";
@@ -279,6 +280,20 @@ authRouter.post(
     }
 
     res.json({ success: true, data: { updated: true } });
+  })
+);
+
+const deleteAccountSchema = z.object({
+  password: z.string().min(1),
+});
+
+authRouter.post(
+  "/delete-account",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const payload = deleteAccountSchema.parse(req.body);
+    const result = await deleteUserAccount(req.auth!.uid, req.auth!.email, payload.password);
+    res.json({ success: true, data: result });
   })
 );
 

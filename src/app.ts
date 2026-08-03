@@ -13,6 +13,7 @@ import { categoriesRouter } from "./routes/categories";
 import { configRouter } from "./routes/config";
 import { favoritesRouter } from "./routes/favorites";
 import { healthRouter } from "./routes/health";
+import { legalRouter } from "./routes/legal";
 import { notificationsRouter } from "./routes/notifications";
 import { paymentsRouter } from "./routes/payments";
 import { providersRouter } from "./routes/providers";
@@ -61,9 +62,15 @@ app.get("/", (_req, res) => {
     data: {
       name: "NLBB Backend API",
       docs: "/api/health",
+      legal: {
+        privacy: "/legal/privacy",
+        terms: "/legal/terms",
+      },
     },
   });
 });
+
+app.use("/legal", legalRouter);
 
 app.use("/api/health", healthRouter);
 app.use("/api/config", configRouter);

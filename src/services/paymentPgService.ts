@@ -42,7 +42,7 @@ interface MpesaCallbackBody {
   };
 }
 
-const SUBSCRIPTION_AMOUNT_KES = 300;
+const SUBSCRIPTION_AMOUNT_KES = 500;
 const PAYMENT_PURPOSE_SUBSCRIPTION = "provider_subscription";
 const PAYMENT_PURPOSE_BOOKING = "booking_service";
 const STK_QUERY_STILL_PROCESSING_CODE = 4999;

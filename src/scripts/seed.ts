@@ -68,7 +68,7 @@ async function seed() {
       code: "monthly",
       name: "Monthly",
       billingPeriod: "monthly",
-      priceAmount: "300",
+      priceAmount: "500",
       currency: "KES",
       isActive: true,
       createdAt: now,
@@ -260,7 +260,7 @@ async function seed() {
 
   await db.insert(payments).values({
     providerId: provider.id,
-    amount: "300",
+    amount: "500",
     currency: "KES",
     method: "mpesa",
     status: "success",
