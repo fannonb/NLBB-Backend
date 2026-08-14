@@ -65,12 +65,14 @@ app.get("/", (_req, res) => {
       legal: {
         privacy: "/legal/privacy",
         terms: "/legal/terms",
+        deleteAccount: "/legal/delete-account",
       },
     },
   });
 });
 
 app.use("/legal", legalRouter);
+app.use("/api/legal", legalRouter);
 
 app.use("/api/health", healthRouter);
 app.use("/api/config", configRouter);

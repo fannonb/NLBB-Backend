@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { LEGAL_CONTACT, PRIVACY_LAST_UPDATED, PRIVACY_POLICY_SECTIONS, TERMS_LAST_UPDATED, TERMS_OF_SERVICE_SECTIONS } from "../content/legalContent";
+import { ACCOUNT_DELETION_MAILTO, DELETE_ACCOUNT_LAST_UPDATED, DELETE_ACCOUNT_SECTIONS, LEGAL_CONTACT, PRIVACY_LAST_UPDATED, PRIVACY_POLICY_SECTIONS, TERMS_LAST_UPDATED, TERMS_OF_SERVICE_SECTIONS } from "../content/legalContent";
 
 export const legalRouter = Router();
 
@@ -30,6 +30,9 @@ const renderLegalPage = (title: string, lastUpdated: string, sections: typeof TE
     ul { padding-left: 1.2rem; }
     footer { margin-top: 36px; padding-top: 18px; border-top: 1px solid #e8dfd0; color: #6b5f52; font-size: 0.95rem; }
     a { color: #8a6f1e; }
+    .cta { display: inline-block; background: #b48a2c; color: #fff; text-decoration: none; font-weight: 700; padding: 12px 18px; border-radius: 10px; margin: 8px 0 12px; }
+    .nav { margin-top: 28px; padding-top: 16px; border-top: 1px solid #e8dfd0; }
+    .nav a { margin-right: 16px; }
   </style>
 </head>
 <body>
@@ -39,6 +42,7 @@ const renderLegalPage = (title: string, lastUpdated: string, sections: typeof TE
     ${renderSectionHtml(sections)}
     <footer>
       <p>Questions? Contact <a href="mailto:${LEGAL_CONTACT.email}">${LEGAL_CONTACT.email}</a> or visit <a href="${LEGAL_CONTACT.website}">${LEGAL_CONTACT.website}</a>.</p>
+      <p class="nav"><a href="/legal/privacy">Privacy Policy</a><a href="/legal/terms">Terms of Service</a><a href="/legal/delete-account">Delete account</a></p>
     </footer>
   </main>
 </body>
@@ -50,4 +54,15 @@ legalRouter.get("/terms", (_req, res) => {
 
 legalRouter.get("/privacy", (_req, res) => {
   res.type("html").send(renderLegalPage("Privacy Policy", PRIVACY_LAST_UPDATED, PRIVACY_POLICY_SECTIONS));
+});
+
+legalRouter.get("/delete-account", (_req, res) => {
+  const extra = `<p><a class="cta" href="${ACCOUNT_DELETION_MAILTO}">Request account deletion by email</a></p>
+<p>Opens your email app to ${LEGAL_CONTACT.email} with the subject “NLBB account deletion request”.</p>`;
+  const html = renderLegalPage(
+    "Delete your NLBB account",
+    DELETE_ACCOUNT_LAST_UPDATED,
+    DELETE_ACCOUNT_SECTIONS
+  ).replace("</h1>", `</h1>${extra}`);
+  res.type("html").send(html);
 });

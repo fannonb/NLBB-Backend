@@ -8,12 +8,20 @@ export const LEGAL_CONTACT = {
   company: 'Never Leave Bros Behind (NLBB)',
   email: 'support@nlbb.co.ke',
   website: 'https://nlbb.co.ke',
-  privacyUrl: 'https://admin.nlbb.co.ke/privacy',
-  termsUrl: 'https://admin.nlbb.co.ke/terms',
+  privacyUrl: 'https://api.nlbb.co.ke/legal/privacy',
+  termsUrl: 'https://api.nlbb.co.ke/legal/terms',
+  deleteAccountUrl: 'https://api.nlbb.co.ke/legal/delete-account',
 };
 
 export const TERMS_LAST_UPDATED = 'July 2026';
-export const PRIVACY_LAST_UPDATED = 'July 2026';
+export const PRIVACY_LAST_UPDATED = 'August 2026';
+export const DELETE_ACCOUNT_LAST_UPDATED = 'August 2026';
+
+export const ACCOUNT_DELETION_MAILTO = `mailto:${LEGAL_CONTACT.email}?subject=${encodeURIComponent(
+  'NLBB account deletion request'
+)}&body=${encodeURIComponent(
+  'Please delete my Never Leave Bros Behind (NLBB) account and associated personal data.\n\nRegistered email:\nPhone (if known):\nRole (customer or provider):\n\nI understand this request is permanent.'
+)}`;
 
 export const TERMS_OF_SERVICE_SECTIONS: LegalSection[] = [
   {
@@ -172,14 +180,14 @@ export const PRIVACY_POLICY_SECTIONS: LegalSection[] = [
     paragraphs: [
       'We keep account and booking records for as long as your account is active and for a reasonable period afterward to meet legal, accounting, and dispute-resolution needs.',
       'You may delete your account at any time from Profile → Delete account in the NLBB mobile app. Deletion is permanent and removes your profile, favorites, and associated account data. Some booking or payment records may be retained where required by law.',
-      'You may also email support@nlbb.co.ke if you need help with account deletion.',
+      `If you have uninstalled the app, request deletion on the public web page at ${LEGAL_CONTACT.deleteAccountUrl} or email ${LEGAL_CONTACT.email} with the subject "NLBB account deletion request".`,
     ],
   },
   {
     title: '8. Your rights',
     paragraphs: [
       'Under applicable Kenyan data protection law, you may have rights to access, correct, delete, or restrict certain processing of your personal information, and to object to some uses.',
-      'Delete your account in the NLBB app under Profile → Delete account, or contact us at support@nlbb.co.ke. We may need to verify your identity before fulfilling a request.',
+      `Delete your account in the NLBB app under Profile → Delete account, visit ${LEGAL_CONTACT.deleteAccountUrl}, or email ${LEGAL_CONTACT.email}. We may need to verify your identity before fulfilling a request.`,
     ],
   },
   {
@@ -210,6 +218,47 @@ export const PRIVACY_POLICY_SECTIONS: LegalSection[] = [
     title: '13. Contact us',
     paragraphs: [
       `If you have questions about this Privacy Policy or how your data is used, contact ${LEGAL_CONTACT.company} at ${LEGAL_CONTACT.email} or visit ${LEGAL_CONTACT.website}.`,
+    ],
+  },
+];
+
+export const DELETE_ACCOUNT_SECTIONS: LegalSection[] = [
+  {
+    title: 'Request deletion without the app',
+    paragraphs: [
+      'Never Leave Bros Behind (NLBB) lets you request deletion of your app account and associated personal data even if you have uninstalled the app.',
+      `Email ${LEGAL_CONTACT.email} with the subject "NLBB account deletion request" and include the email address on the account. Use the button on this page to open a pre-filled message.`,
+    ],
+  },
+  {
+    title: 'Delete from inside the NLBB app',
+    paragraphs: [
+      'If you still have the app installed, sign in and go to Profile → Delete account. Confirm with your password. This permanently deletes the account.',
+    ],
+    bullets: [
+      'Customers: Profile tab → Delete account',
+      'Providers: Profile tab → Delete account',
+    ],
+  },
+  {
+    title: 'What we delete',
+    paragraphs: ['After we verify the request, we delete:'],
+    bullets: [
+      'Your login and profile (name, email, phone, photo, preferences)',
+      'Saved favorites and notification tokens',
+      'Provider business listing, services, and media if you have a provider account',
+    ],
+  },
+  {
+    title: 'What we may retain',
+    paragraphs: [
+      'Some booking or payment records may be kept where required by Kenyan law, accounting, fraud prevention, or dispute resolution. We do not keep your account active after deletion is completed.',
+    ],
+  },
+  {
+    title: 'Timing',
+    paragraphs: [
+      'In-app deletion is immediate after password confirmation. Email requests are processed after we verify that you control the account, usually within 30 days.',
     ],
   },
 ];
