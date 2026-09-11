@@ -3,6 +3,7 @@ import { getDb } from "../db/client";
 import { platformSettings, providerSubscriptions, providers, subscriptionPlans } from "../db/schema";
 import type { Subscription, SubscriptionStatus } from "../types/domain";
 import {
+  DAY_MS,
   isEffectivelyActive,
   pauseScopeFor,
   remainingDaysFromMs,
@@ -212,13 +213,15 @@ const toSubscriptionDto = (
   globallyPaused: boolean
 ): Subscription => {
   const remaining = remainingMs(row, globallyPaused);
-  const paused = Boolean(row.pausedAt) || globallyPaused;
+  const complimentary = Boolean(row.pausedAt) || globallyPaused;
   const paidActive = row.status === "active" && remaining > 0;
-  const displayExpiry = paused ? new Date(Date.now() + remaining) : (row.expiresAt ?? row.renewalAt ?? new Date());
+  const displayExpiry = complimentary
+    ? new Date(Date.now() + (remaining > 0 ? remaining : DAY_MS))
+    : (row.expiresAt ?? row.renewalAt ?? new Date());
 
   return {
     providerId: row.providerId,
-    status: paused ? "paused" : ((paidActive ? "active" : row.status) as SubscriptionStatus),
+    status: (complimentary || paidActive ? "active" : row.status) as SubscriptionStatus,
     renewalDate: displayExpiry.toISOString(),
     amount: planAmount,
     planAmount,
@@ -226,7 +229,7 @@ const toSubscriptionDto = (
     paymentMethod: "mpesa",
     lastPaymentId: row.lastPaymentId ?? undefined,
     updatedAt: row.updatedAt.toISOString(),
-    paused,
+    paused: complimentary,
     pauseScope: pauseScopeFor(row.pausedAt, globallyPaused),
     pauseReason: globallyPaused ? undefined : row.pauseReason,
     remainingMs: remaining,
@@ -423,8 +426,8 @@ export const subscriptionIsActive = (subscription: Subscription | null) => {
   if (!subscription) {
     return false;
   }
-  if (subscription.paused || subscription.status === "paused") {
-    return false;
+  if (subscription.paused) {
+    return true;
   }
   return isEffectivelyActive(
     {

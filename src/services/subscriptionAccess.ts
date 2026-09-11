@@ -40,14 +40,14 @@ export const remainingMs = (
 export const remainingDaysFromMs = (ms: number) => Math.max(0, Math.ceil(ms / DAY_MS));
 
 export const isEffectivelyActive = (
-  input: SubscriptionAccessInput,
+  input: SubscriptionAccessInput | undefined | null,
   globallyPaused: boolean,
   now = Date.now()
 ) => {
-  if (isPauseFrozen(input, globallyPaused)) {
-    return false;
+  if (globallyPaused || input?.pausedAt) {
+    return true;
   }
-  if (input.status !== "active") {
+  if (!input || input.status !== "active") {
     return false;
   }
   return remainingMs(input, globallyPaused, now) > 0;

@@ -23,7 +23,7 @@ import { isEffectivelyActive, remainingDaysFromMs, remainingMs } from "./subscri
 
 type AdminProviderStatus = "pending" | "approved" | "suspended";
 type AdminUserStatus = "active" | "disabled";
-type AdminSubStatus = "active" | "expired" | "paused" | "none";
+type AdminSubStatus = "active" | "expired" | "paused" | "complimentary" | "none";
 
 interface DbUser {
   id: string;
@@ -115,10 +115,10 @@ const getSubStatus = (
   globallyPaused = false
 ): AdminSubStatus => {
   if (!subscription) {
-    return "none";
+    return globallyPaused ? "complimentary" : "none";
   }
   if (subscription.pausedAt || globallyPaused) {
-    return "paused";
+    return "complimentary";
   }
   if (isEffectivelyActive(subscription, false)) {
     return "active";
@@ -430,7 +430,7 @@ export const listAdminProviders = async (filters: ListFilters) => {
         email: owner?.email ?? "-",
         status,
         subscriptionStatus: subStatus,
-        subscriptionPaused: subStatus === "paused",
+        subscriptionPaused: subStatus === "complimentary",
         subscriptionPauseScope: subscription?.pausedAt && settings.subscriptionsPaused
           ? "both"
           : subscription?.pausedAt
@@ -713,8 +713,10 @@ export const getAdminRevenueReport = async () => {
     plan.percent = totalPlanCount > 0 ? Math.round((plan.count / totalPlanCount) * 100) : 0;
   });
 
-  const activeSubscribers = subscriptionRows.filter((subscription) =>
-    isEffectivelyActive(subscription, settings.subscriptionsPaused)
+  const liveProviders = providerRows.filter((provider) => provider.adminStatus !== "deleted");
+  const subscriptionByProvider = new Map(subscriptionRows.map((subscription) => [subscription.providerId, subscription]));
+  const activeSubscribers = liveProviders.filter((provider) =>
+    isEffectivelyActive(subscriptionByProvider.get(provider.id), settings.subscriptionsPaused)
   ).length;
 
   const twelveMonthsAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1));

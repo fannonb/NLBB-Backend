@@ -40,8 +40,10 @@ export const getAdminOverview = async () => {
   const subscriptionRows = await db.select().from(providerSubscriptions);
   const paymentRows = await db.select().from(payments);
 
-  const activeSubscriptions = subscriptionRows.filter((sub) =>
-    isEffectivelyActive(sub, settings.subscriptionsPaused)
+  const liveProviders = providerRows.filter((provider) => provider.adminStatus !== "deleted");
+  const subscriptionByProvider = new Map(subscriptionRows.map((sub) => [sub.providerId, sub]));
+  const activeSubscriptions = liveProviders.filter((provider) =>
+    isEffectivelyActive(subscriptionByProvider.get(provider.id), settings.subscriptionsPaused)
   ).length;
   const totalRevenue = paymentRows
     .filter((payment) => payment.status === "success")

@@ -774,9 +774,7 @@ export const setProviderOpenState = async (providerId: string, isOpen: boolean) 
     if (!subscriptionIsActive(subscription)) {
       throw new ApiError(
         403,
-        subscription?.paused
-          ? "Your subscription is paused. Bookings will unlock when NLBB reinstates it."
-          : "Activate your subscription before opening bookings.",
+        "Activate your subscription before opening bookings.",
         "SUBSCRIPTION_INACTIVE"
       );
     }

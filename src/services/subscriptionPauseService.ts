@@ -55,8 +55,14 @@ const ensureSubscriptionRow = async (providerId: string) => {
   return created!;
 };
 
-const closeBookingsForProvider = async (providerId: string) => {
+const enforceBookingGate = async (providerId: string) => {
   await enforceBookingGateForProvider(providerId);
+};
+
+const enforceBookingGates = async (providerIds: string[]) => {
+  for (const providerId of providerIds) {
+    await enforceBookingGate(providerId);
+  }
 };
 
 export const pauseProviderSubscription = async (
@@ -84,10 +90,9 @@ export const pauseProviderSubscription = async (
     })
     .where(eq(providerSubscriptions.id, row.id));
 
-  await closeBookingsForProvider(providerId);
   await appendAdminLog({
     type: "subscription",
-    text: `Subscription paused for ${provider.name}${reason ? `: ${trimReason(reason)}` : ""}`,
+    text: `Subscription payments paused for ${provider.name}${reason ? `: ${trimReason(reason)}` : ""}`,
   });
   return getSubscription(providerId);
 };
@@ -121,10 +126,10 @@ export const resumeProviderSubscription = async (providerId: string, actorUid: s
     await restoreExpiryIfUnpaused(cleared, settings.subscriptionsPaused, now);
   }
 
-  await closeBookingsForProvider(providerId);
+  await enforceBookingGate(providerId);
   await appendAdminLog({
     type: "subscription",
-    text: `Subscription resumed for ${provider.name} by ${actorUid}`,
+    text: `Subscription payments reinstated for ${provider.name} by ${actorUid}`,
   });
   return getSubscription(providerId);
 };
@@ -159,14 +164,9 @@ export const setGlobalSubscriptionPause = async (
       .where(eq(platformSettings.id, SETTINGS_ID));
     invalidatePlatformSettingsCache();
 
-    const openProviders = await db.select({ id: providers.id }).from(providers).where(eq(providers.isOpen, true));
-    for (const provider of openProviders) {
-      await closeBookingsForProvider(provider.id);
-    }
-
     await appendAdminLog({
       type: "subscription",
-      text: `All provider subscriptions paused${reason ? `: ${trimReason(reason)}` : ""}`,
+      text: `Subscription payments paused for all providers${reason ? `: ${trimReason(reason)}` : ""}`,
     });
   } else {
     await db
@@ -186,9 +186,12 @@ export const setGlobalSubscriptionPause = async (
       await restoreExpiryIfUnpaused(row, false, now);
     }
 
+    const allProviders = await db.select({ id: providers.id }).from(providers);
+    await enforceBookingGates(allProviders.map((provider) => provider.id));
+
     await appendAdminLog({
       type: "subscription",
-      text: `All provider subscriptions reinstated by ${actorUid}`,
+      text: `Subscription payments reinstated for all providers by ${actorUid}`,
     });
   }
 

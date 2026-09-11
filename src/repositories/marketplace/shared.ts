@@ -13,6 +13,9 @@ export const isSubscriptionCurrentlyActive = (
     | undefined,
   globallyPaused = false
 ) => {
+  if (globallyPaused) {
+    return true;
+  }
   if (!subscription) {
     return false;
   }
