@@ -1,7 +1,8 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { bookings, providers, providerSubscriptions, payments, users } from "../db/schema";
-import { getProviderIdByOwnerUid } from "./subscriptionPgService";
+import { getProviderIdByOwnerUid, getPlatformSettings } from "./subscriptionPgService";
+import { isEffectivelyActive } from "./subscriptionAccess";
 
 export const getProviderAnalytics = async (ownerUid: string) => {
   const db = getDb();
@@ -32,14 +33,15 @@ export const getProviderAnalytics = async (ownerUid: string) => {
 
 export const getAdminOverview = async () => {
   const db = getDb();
+  const settings = await getPlatformSettings();
   const usersRows = await db.select().from(users);
   const providerRows = await db.select().from(providers);
   const bookingRows = await db.select().from(bookings);
   const subscriptionRows = await db.select().from(providerSubscriptions);
   const paymentRows = await db.select().from(payments);
 
-  const activeSubscriptions = subscriptionRows.filter(
-    (sub) => sub.status === "active" && (sub.expiresAt ?? sub.renewalAt ?? new Date()).getTime() > Date.now()
+  const activeSubscriptions = subscriptionRows.filter((sub) =>
+    isEffectivelyActive(sub, settings.subscriptionsPaused)
   ).length;
   const totalRevenue = paymentRows
     .filter((payment) => payment.status === "success")

@@ -1,4 +1,5 @@
 import type { Provider } from "../../types/domain";
+import { isEffectivelyActive } from "../../services/subscriptionAccess";
 
 export const isSubscriptionCurrentlyActive = (
   subscription:
@@ -6,20 +7,26 @@ export const isSubscriptionCurrentlyActive = (
         status?: string | null;
         renewalDate?: string | null;
         expiresAt?: string | null;
+        pausedAt?: string | null;
+        remainingMsAtPause?: number | null;
       }
-    | undefined
+    | undefined,
+  globallyPaused = false
 ) => {
-  if (!subscription || subscription.status !== "active") {
+  if (!subscription) {
     return false;
   }
 
-  const expiry = subscription.expiresAt ?? subscription.renewalDate;
-  if (!expiry) {
-    return false;
-  }
-
-  const expiryTime = new Date(expiry).getTime();
-  return !Number.isNaN(expiryTime) && expiryTime > Date.now();
+  return isEffectivelyActive(
+    {
+      status: subscription.status,
+      expiresAt: subscription.expiresAt,
+      renewalAt: subscription.renewalDate,
+      pausedAt: subscription.pausedAt,
+      remainingMsAtPause: subscription.remainingMsAtPause,
+    },
+    globallyPaused
+  );
 };
 
 export const sanitizeProvider = (

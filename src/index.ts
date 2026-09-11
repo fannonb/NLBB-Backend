@@ -1,7 +1,9 @@
 import { networkInterfaces } from "node:os";
+import path from "node:path";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { app } from "./app";
 import { env } from "./config/env";
-import { initializeDatabase } from "./db/client";
+import { initializeDatabase, getDb } from "./db/client";
 import { ensureDefaultCategories } from "./services/ensureDefaultCategories";
 import { getEmailDiagnostics, verifyEmailTransport } from "./services/emailService";
 import { startSubscriptionReminderScheduler } from "./services/subscriptionReminderService";
@@ -21,6 +23,9 @@ const listLanAddresses = () => {
 async function start() {
   try {
     await initializeDatabase();
+    await migrate(getDb(), {
+      migrationsFolder: path.join(process.cwd(), "drizzle"),
+    });
     await ensureDefaultCategories();
   } catch (error) {
     // eslint-disable-next-line no-console

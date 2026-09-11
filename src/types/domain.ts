@@ -8,7 +8,8 @@ export type BookingStatus =
   | "completed"
   | "cancelled";
 
-export type SubscriptionStatus = "active" | "expired" | "pending" | "suspended";
+export type SubscriptionStatus = "active" | "expired" | "pending" | "suspended" | "paused";
+export type SubscriptionPauseScope = "account" | "global" | "both";
 
 export interface GeoPointLike {
   lat: number;
@@ -97,6 +98,11 @@ export interface Subscription {
   paymentMethod: "mpesa";
   lastPaymentId?: string;
   updatedAt: string;
+  paused?: boolean;
+  pauseScope?: SubscriptionPauseScope | null;
+  pauseReason?: string | null;
+  remainingMs?: number;
+  remainingDays?: number;
 }
 
 export interface Payment {

@@ -15,6 +15,12 @@ import {
   updateProviderAdminStatus,
   deleteAdminProvider,
 } from "../services/adminPgService";
+import {
+  getSubscriptionSettings,
+  pauseProviderSubscription,
+  resumeProviderSubscription,
+  setGlobalSubscriptionPause,
+} from "../services/subscriptionPauseService";
 import { CATEGORY_ICON_VALUES } from "../constants/categoryIcons";
 import { asyncHandler } from "../utils/asyncHandler";
 
@@ -219,6 +225,48 @@ adminRouter.get(
   "/revenue",
   asyncHandler(async (_req, res) => {
     const data = await getAdminRevenueReport();
+    res.json({ success: true, data });
+  })
+);
+
+adminRouter.get(
+  "/settings",
+  asyncHandler(async (_req, res) => {
+    res.json({ success: true, data: await getSubscriptionSettings() });
+  })
+);
+
+adminRouter.patch(
+  "/settings/subscriptions",
+  asyncHandler(async (req, res) => {
+    const payload = z
+      .object({
+        paused: z.boolean(),
+        reason: z.string().trim().max(500).optional(),
+      })
+      .parse(req.body);
+    const data = await setGlobalSubscriptionPause(payload.paused, req.auth!.uid, payload.reason);
+    res.json({ success: true, data });
+  })
+);
+
+adminRouter.post(
+  "/providers/:providerId/subscription/pause",
+  asyncHandler(async (req, res) => {
+    const payload = z
+      .object({
+        reason: z.string().trim().max(500).optional(),
+      })
+      .parse(req.body ?? {});
+    const data = await pauseProviderSubscription(req.params.providerId, req.auth!.uid, payload.reason);
+    res.json({ success: true, data });
+  })
+);
+
+adminRouter.post(
+  "/providers/:providerId/subscription/resume",
+  asyncHandler(async (req, res) => {
+    const data = await resumeProviderSubscription(req.params.providerId, req.auth!.uid);
     res.json({ success: true, data });
   })
 );

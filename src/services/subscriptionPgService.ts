@@ -1,13 +1,32 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/client";
-import { providerSubscriptions, providers, subscriptionPlans } from "../db/schema";
+import { platformSettings, providerSubscriptions, providers, subscriptionPlans } from "../db/schema";
 import type { Subscription, SubscriptionStatus } from "../types/domain";
+import {
+  isEffectivelyActive,
+  pauseScopeFor,
+  remainingDaysFromMs,
+  remainingMs,
+} from "./subscriptionAccess";
 
 const DEFAULT_PLAN_CODE = "monthly";
 const DEFAULT_PLAN_AMOUNT = 500;
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const SETTINGS_ID = "default";
 
 const toMoney = (value: unknown) => Number(Number(value ?? 0).toFixed(2));
+
+export type PlatformSubscriptionSettings = {
+  id: string;
+  subscriptionsPaused: boolean;
+  subscriptionsPausedAt: Date | null;
+  subscriptionsPauseReason: string | null;
+  subscriptionsPausedBy: string | null;
+  updatedAt: Date;
+};
+
+let settingsCache: { value: PlatformSubscriptionSettings; at: number } | null = null;
+const SETTINGS_CACHE_MS = 1500;
 
 const resetLegacyCreditBalance = async (providerId: string, creditBalance: unknown) => {
   if (toMoney(creditBalance) === 0) {
@@ -57,6 +76,51 @@ const ensureDefaultPlan = async () => {
   return created;
 };
 
+export const invalidatePlatformSettingsCache = () => {
+  settingsCache = null;
+};
+
+export const getPlatformSettings = async (): Promise<PlatformSubscriptionSettings> => {
+  const now = Date.now();
+  if (settingsCache && now - settingsCache.at < SETTINGS_CACHE_MS) {
+    return settingsCache.value;
+  }
+
+  const db = getDb();
+  const [existing] = await db.select().from(platformSettings).where(eq(platformSettings.id, SETTINGS_ID)).limit(1);
+  const row =
+    existing ??
+    (
+      await db
+        .insert(platformSettings)
+        .values({
+          id: SETTINGS_ID,
+          subscriptionsPaused: false,
+          updatedAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .returning()
+    )[0] ??
+    (
+      await db.select().from(platformSettings).where(eq(platformSettings.id, SETTINGS_ID)).limit(1)
+    )[0];
+
+  if (!row) {
+    throw new Error("platform_settings row could not be created");
+  }
+
+  const value: PlatformSubscriptionSettings = {
+    id: row.id,
+    subscriptionsPaused: row.subscriptionsPaused,
+    subscriptionsPausedAt: row.subscriptionsPausedAt,
+    subscriptionsPauseReason: row.subscriptionsPauseReason,
+    subscriptionsPausedBy: row.subscriptionsPausedBy,
+    updatedAt: row.updatedAt,
+  };
+  settingsCache = { value, at: now };
+  return value;
+};
+
 export const getProviderIdByOwnerUid = async (ownerUid: string) => {
   const db = getDb();
   const [provider] = await db.select({ id: providers.id }).from(providers).where(eq(providers.ownerUserId, ownerUid)).limit(1);
@@ -83,12 +147,104 @@ const resolveExpiryDate = (
   return new Date();
 };
 
+type SubscriptionRow = typeof providerSubscriptions.$inferSelect;
+
+export const freezeRemainingIfNeeded = async (row: SubscriptionRow, now = new Date()) => {
+  if (row.remainingMsAtPause != null) {
+    return row;
+  }
+
+  const remaining = remainingMs(row, false, now.getTime());
+  const db = getDb();
+  const [updated] = await db
+    .update(providerSubscriptions)
+    .set({
+      remainingMsAtPause: remaining,
+      updatedAt: now,
+    })
+    .where(eq(providerSubscriptions.id, row.id))
+    .returning();
+  return updated ?? { ...row, remainingMsAtPause: remaining, updatedAt: now };
+};
+
+export const restoreExpiryIfUnpaused = async (
+  row: SubscriptionRow,
+  globallyPaused: boolean,
+  now = new Date()
+) => {
+  if (row.pausedAt || globallyPaused) {
+    return row;
+  }
+  if (row.remainingMsAtPause == null) {
+    return row;
+  }
+
+  const remaining = Math.max(0, Number(row.remainingMsAtPause));
+  const expiry = new Date(now.getTime() + remaining);
+  const db = getDb();
+  const [updated] = await db
+    .update(providerSubscriptions)
+    .set({
+      expiresAt: expiry,
+      renewalAt: expiry,
+      status: remaining > 0 ? "active" : "expired",
+      remainingMsAtPause: null,
+      updatedAt: now,
+    })
+    .where(eq(providerSubscriptions.id, row.id))
+    .returning();
+  return updated ?? row;
+};
+
+const toSubscriptionDto = (
+  row: {
+    providerId: string;
+    status: string;
+    renewalAt?: Date | null;
+    expiresAt?: Date | null;
+    lastPaymentId?: string | null;
+    pausedAt?: Date | null;
+    pauseReason?: string | null;
+    remainingMsAtPause?: number | null;
+    updatedAt: Date;
+  },
+  planAmount: number,
+  globallyPaused: boolean
+): Subscription => {
+  const remaining = remainingMs(row, globallyPaused);
+  const paused = Boolean(row.pausedAt) || globallyPaused;
+  const paidActive = row.status === "active" && remaining > 0;
+  const displayExpiry = paused ? new Date(Date.now() + remaining) : (row.expiresAt ?? row.renewalAt ?? new Date());
+
+  return {
+    providerId: row.providerId,
+    status: paused ? "paused" : ((paidActive ? "active" : row.status) as SubscriptionStatus),
+    renewalDate: displayExpiry.toISOString(),
+    amount: planAmount,
+    planAmount,
+    creditBalance: 0,
+    paymentMethod: "mpesa",
+    lastPaymentId: row.lastPaymentId ?? undefined,
+    updatedAt: row.updatedAt.toISOString(),
+    paused,
+    pauseScope: pauseScopeFor(row.pausedAt, globallyPaused),
+    pauseReason: globallyPaused ? undefined : row.pauseReason,
+    remainingMs: remaining,
+    remainingDays: remainingDaysFromMs(remaining),
+  };
+};
+
 export const normalizeSubscriptionStatus = async (providerId: string) => {
   const db = getDb();
+  const settings = await getPlatformSettings();
   const [existing] = await db.select().from(providerSubscriptions).where(eq(providerSubscriptions.providerId, providerId)).limit(1);
 
   if (!existing) {
     return null;
+  }
+
+  if (existing.pausedAt || settings.subscriptionsPaused || existing.remainingMsAtPause != null) {
+    return existing;
   }
 
   const expiry = existing.expiresAt ?? existing.renewalAt;
@@ -113,6 +269,7 @@ export const normalizeSubscriptionStatus = async (providerId: string) => {
 export const getSubscription = async (providerId: string) => {
   const plan = await ensureDefaultPlan();
   await normalizeSubscriptionStatus(providerId);
+  const settings = await getPlatformSettings();
   const db = getDb();
   const [row] = await db
     .select({
@@ -123,6 +280,9 @@ export const getSubscription = async (providerId: string) => {
       startsAt: providerSubscriptions.startsAt,
       lastPaymentId: providerSubscriptions.lastPaymentId,
       creditBalance: providerSubscriptions.creditBalance,
+      pausedAt: providerSubscriptions.pausedAt,
+      pauseReason: providerSubscriptions.pauseReason,
+      remainingMsAtPause: providerSubscriptions.remainingMsAtPause,
       updatedAt: providerSubscriptions.updatedAt,
       planPrice: subscriptionPlans.priceAmount,
       planCurrency: subscriptionPlans.currency,
@@ -134,31 +294,26 @@ export const getSubscription = async (providerId: string) => {
 
   if (!row) {
     const planAmount = Number(plan.priceAmount ?? DEFAULT_PLAN_AMOUNT);
-    return {
-      providerId,
-      status: "expired" as const,
-      renewalDate: new Date().toISOString(),
-      amount: planAmount,
+    return toSubscriptionDto(
+      {
+        providerId,
+        status: "expired",
+        renewalAt: new Date(),
+        expiresAt: new Date(),
+        lastPaymentId: null,
+        pausedAt: null,
+        pauseReason: null,
+        remainingMsAtPause: null,
+        updatedAt: new Date(),
+      },
       planAmount,
-      creditBalance: 0,
-      paymentMethod: "mpesa" as const,
-      updatedAt: new Date().toISOString(),
-    } satisfies Subscription;
+      settings.subscriptionsPaused
+    );
   }
 
   await resetLegacyCreditBalance(providerId, row.creditBalance);
   const planAmount = Number(row.planPrice ?? DEFAULT_PLAN_AMOUNT);
-  return {
-    providerId: row.providerId,
-    status: row.status as SubscriptionStatus,
-    renewalDate: (row.expiresAt ?? row.renewalAt ?? new Date()).toISOString(),
-    amount: planAmount,
-    planAmount,
-    creditBalance: 0,
-    paymentMethod: "mpesa" as const,
-    lastPaymentId: row.lastPaymentId ?? undefined,
-    updatedAt: row.updatedAt.toISOString(),
-  } satisfies Subscription;
+  return toSubscriptionDto(row, planAmount, settings.subscriptionsPaused);
 };
 
 export const upsertSubscription = async (
@@ -193,18 +348,7 @@ export const upsertSubscription = async (
     await db.update(providerSubscriptions).set(payload).where(eq(providerSubscriptions.providerId, providerId));
   }
 
-  const planAmount = Number(plan.priceAmount ?? DEFAULT_PLAN_AMOUNT);
-  return {
-    providerId,
-    status,
-    renewalDate: renewalDate.toISOString(),
-    amount: planAmount,
-    planAmount,
-    creditBalance: 0,
-    paymentMethod: "mpesa" as const,
-    lastPaymentId: options?.lastPaymentId ?? existing?.lastPaymentId ?? undefined,
-    updatedAt: now.toISOString(),
-  } satisfies Subscription;
+  return getSubscription(providerId);
 };
 
 export const getSubscriptionAmountDue = async (providerId: string) => {
@@ -219,6 +363,7 @@ export const applySubscriptionPayment = async (
 ) => {
   const db = getDb();
   const plan = await ensureDefaultPlan();
+  const settings = await getPlatformSettings();
   const [existing] = await db
     .select()
     .from(providerSubscriptions)
@@ -234,22 +379,61 @@ export const applySubscriptionPayment = async (
     });
   }
 
+  const frozen = Boolean(existing?.pausedAt) || settings.subscriptionsPaused;
+  if (existing && frozen) {
+    const frozenRow = await freezeRemainingIfNeeded(existing);
+    const remaining = remainingMs(frozenRow, true) + THIRTY_DAYS_MS;
+    await db
+      .update(providerSubscriptions)
+      .set({
+        status: "active",
+        remainingMsAtPause: remaining,
+        lastPaymentId: paymentId,
+        creditBalance: "0",
+        updatedAt: new Date(),
+      })
+      .where(eq(providerSubscriptions.id, existing.id));
+    return getSubscription(providerId);
+  }
+
   const currentExpiry = existing?.expiresAt ?? existing?.renewalAt ?? null;
   const baseTime =
     currentExpiry && currentExpiry.getTime() > Date.now()
       ? currentExpiry.getTime()
       : Date.now();
 
-  return upsertSubscription(providerId, "active", {
+  const updated = await upsertSubscription(providerId, "active", {
     renewalDate: new Date(baseTime + THIRTY_DAYS_MS).toISOString(),
     lastPaymentId: paymentId,
     creditBalance: 0,
   });
+
+  if (settings.subscriptionsPaused) {
+    const [row] = await db.select().from(providerSubscriptions).where(eq(providerSubscriptions.providerId, providerId)).limit(1);
+    if (row) {
+      await freezeRemainingIfNeeded(row);
+    }
+    return getSubscription(providerId);
+  }
+
+  return updated;
 };
 
 export const subscriptionIsActive = (subscription: Subscription | null) => {
-  if (!subscription || subscription.status !== "active") {
+  if (!subscription) {
     return false;
   }
-  return new Date(subscription.renewalDate).getTime() > Date.now();
+  if (subscription.paused || subscription.status === "paused") {
+    return false;
+  }
+  return isEffectivelyActive(
+    {
+      status: subscription.status,
+      expiresAt: subscription.renewalDate,
+      remainingMsAtPause: subscription.remainingMs ?? null,
+    },
+    false
+  );
 };
+
+export { ensureDefaultPlan, SETTINGS_ID, THIRTY_DAYS_MS };

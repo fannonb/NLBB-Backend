@@ -10,8 +10,9 @@ import {
   providerWorkingHours,
 } from "../../db/schema";
 import type { Provider, WorkingHoursDay } from "../../types/domain";
+import { getPlatformSettings } from "../../services/subscriptionPgService";
+import { isEffectivelyActive } from "../../services/subscriptionAccess";
 import {
-  isSubscriptionCurrentlyActive,
   sanitizeProvider,
   toIsoString,
   weekdayLabels,
@@ -71,8 +72,18 @@ const buildProviderRecord = (
   servicesByProvider: Map<string, Provider["services"]>,
   mediaByProvider: Map<string, Array<{ kind: string; url: string }>>,
   hoursByProvider: Map<string, WorkingHoursDay[]>,
-  subscriptionByProvider: Map<string, { status: string; expiresAt?: string | null; renewalDate?: string | null }>,
-  currentUser?: { uid: string; role: string }
+  subscriptionByProvider: Map<
+    string,
+    {
+      status: string;
+      expiresAt?: string | null;
+      renewalDate?: string | null;
+      pausedAt?: string | null;
+      remainingMsAtPause?: number | null;
+    }
+  >,
+  currentUser?: { uid: string; role: string },
+  globallyPaused = false
 ) => {
   const media = mediaByProvider.get(row.id) ?? [];
   const galleryImages = media.filter((item) => item.kind === "gallery").map((item) => item.url);
@@ -81,7 +92,17 @@ const buildProviderRecord = (
   const workingHours = hoursByProvider.get(row.id) ?? [];
   const openDays = workingHours.filter((item) => item.isOpen);
   const primaryHours = openDays[0];
-  const isSubscribed = isSubscriptionCurrentlyActive(subscriptionByProvider.get(row.id));
+  const subscription = subscriptionByProvider.get(row.id);
+  const isSubscribed = isEffectivelyActive(
+    {
+      status: subscription?.status,
+      expiresAt: subscription?.expiresAt,
+      renewalAt: subscription?.renewalDate,
+      pausedAt: subscription?.pausedAt,
+      remainingMsAtPause: subscription?.remainingMsAtPause,
+    },
+    globallyPaused
+  );
 
   const provider: Provider = {
     id: row.id,
@@ -180,7 +201,16 @@ const fetchProviderDetails = async (providerIds: string[]) => {
       servicesByProvider: new Map<string, Provider["services"]>(),
       mediaByProvider: new Map<string, Array<{ kind: string; url: string }>>(),
       hoursByProvider: new Map<string, WorkingHoursDay[]>(),
-      subscriptionByProvider: new Map<string, { status: string; expiresAt?: string | null; renewalDate?: string | null }>(),
+      subscriptionByProvider: new Map<
+        string,
+        {
+          status: string;
+          expiresAt?: string | null;
+          renewalDate?: string | null;
+          pausedAt?: string | null;
+          remainingMsAtPause?: number | null;
+        }
+      >(),
     };
   }
 
@@ -228,6 +258,8 @@ const fetchProviderDetails = async (providerIds: string[]) => {
         status: providerSubscriptions.status,
         expiresAt: providerSubscriptions.expiresAt,
         renewalAt: providerSubscriptions.renewalAt,
+        pausedAt: providerSubscriptions.pausedAt,
+        remainingMsAtPause: providerSubscriptions.remainingMsAtPause,
         createdAt: providerSubscriptions.createdAt,
       })
       .from(providerSubscriptions)
@@ -277,7 +309,13 @@ const fetchProviderDetails = async (providerIds: string[]) => {
 
   const subscriptionByProvider = new Map<
     string,
-    { status: string; expiresAt?: string | null; renewalDate?: string | null }
+    {
+      status: string;
+      expiresAt?: string | null;
+      renewalDate?: string | null;
+      pausedAt?: string | null;
+      remainingMsAtPause?: number | null;
+    }
   >();
   for (const row of subscriptionRows) {
     if (!subscriptionByProvider.has(row.providerId)) {
@@ -285,6 +323,8 @@ const fetchProviderDetails = async (providerIds: string[]) => {
         status: row.status,
         expiresAt: row.expiresAt ? toIsoString(row.expiresAt) : null,
         renewalDate: row.renewalAt ? toIsoString(row.renewalAt) : null,
+        pausedAt: row.pausedAt ? toIsoString(row.pausedAt) : null,
+        remainingMsAtPause: row.remainingMsAtPause,
       });
     }
   }
@@ -367,6 +407,7 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
     });
 
     const details = await fetchProviderDetails(filteredRows.map((row) => row.id));
+    const settings = await getPlatformSettings();
     const providersList = filteredRows.map((row) =>
       buildProviderRecord(
         row,
@@ -374,7 +415,8 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
         details.mediaByProvider,
         details.hoursByProvider,
         details.subscriptionByProvider,
-        currentUser
+        currentUser,
+        settings.subscriptionsPaused
       )
     );
 
@@ -426,13 +468,15 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
     }
 
     const details = await fetchProviderDetails([id]);
+    const settings = await getPlatformSettings();
     const provider = buildProviderRecord(
       row,
       details.servicesByProvider,
       details.mediaByProvider,
       details.hoursByProvider,
       details.subscriptionByProvider,
-      currentUser
+      currentUser,
+      settings.subscriptionsPaused
     );
 
     if (

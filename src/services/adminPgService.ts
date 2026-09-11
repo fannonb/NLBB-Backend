@@ -18,10 +18,12 @@ import type { Provider, Subscription, UserRole } from "../types/domain";
 import { ApiError } from "../utils/apiError";
 import { categorySlugFromName } from "../utils/categorySlug";
 import { getAdminOverview } from "./analyticsPgService";
+import { getPlatformSettings } from "./subscriptionPgService";
+import { isEffectivelyActive, remainingDaysFromMs, remainingMs } from "./subscriptionAccess";
 
 type AdminProviderStatus = "pending" | "approved" | "suspended";
 type AdminUserStatus = "active" | "disabled";
-type AdminSubStatus = "active" | "expired" | "none";
+type AdminSubStatus = "active" | "expired" | "paused" | "none";
 
 interface DbUser {
   id: string;
@@ -102,15 +104,29 @@ const getProviderStatus = (provider: ProviderDoc): AdminProviderStatus => {
   return "pending";
 };
 
-const getSubStatus = (subscription?: { status?: string; renewalAt?: Date | null; expiresAt?: Date | null }): AdminSubStatus => {
+const getSubStatus = (
+  subscription?: {
+    status?: string;
+    renewalAt?: Date | null;
+    expiresAt?: Date | null;
+    pausedAt?: Date | null;
+    remainingMsAtPause?: number | null;
+  },
+  globallyPaused = false
+): AdminSubStatus => {
   if (!subscription) {
     return "none";
   }
-  const expiry = subscription.expiresAt ?? subscription.renewalAt;
-  if (subscription.status === "active" && expiry && expiry.getTime() > Date.now()) {
+  if (subscription.pausedAt || globallyPaused) {
+    return "paused";
+  }
+  if (isEffectivelyActive(subscription, false)) {
     return "active";
   }
-  return "expired";
+  if (subscription.status) {
+    return "expired";
+  }
+  return "none";
 };
 
 const getPlanLabel = (amount: number) => {
@@ -370,6 +386,7 @@ const pushActivity = (
 
 export const listAdminProviders = async (filters: ListFilters) => {
   const db = getDb();
+  const settings = await getPlatformSettings();
   const providerRows = await db.select().from(providers);
   const userRows = await db.select().from(users);
   const subscriptionRows = await db.select().from(providerSubscriptions);
@@ -401,7 +418,8 @@ export const listAdminProviders = async (filters: ListFilters) => {
       const owner = usersById.get(provider.ownerUserId);
       const subscription = subscriptionRows.find((sub) => sub.providerId === provider.id);
       const status = getProviderStatus(provider as ProviderDoc);
-      const subStatus = getSubStatus(subscription);
+      const subStatus = getSubStatus(subscription, settings.subscriptionsPaused);
+      const remaining = subscription ? remainingMs(subscription, settings.subscriptionsPaused) : 0;
       return {
         id: provider.id,
         name: provider.name,
@@ -412,6 +430,16 @@ export const listAdminProviders = async (filters: ListFilters) => {
         email: owner?.email ?? "-",
         status,
         subscriptionStatus: subStatus,
+        subscriptionPaused: subStatus === "paused",
+        subscriptionPauseScope: subscription?.pausedAt && settings.subscriptionsPaused
+          ? "both"
+          : subscription?.pausedAt
+            ? "account"
+            : settings.subscriptionsPaused
+              ? "global"
+              : null,
+        remainingDays: remainingDaysFromMs(remaining),
+        remainingMs: remaining,
         subscriptionPlan: subscription ? getPlanLabel(Number(subscription.status === "active" ? 500 : 500)) : undefined,
         bookingsCount: bookingsByProvider.get(provider.id) ?? 0,
         rating: Number(provider.ratingAvg ?? 0),
@@ -604,6 +632,7 @@ export const softDeleteAdminUser = hardDeleteAdminUser;
 
 export const getAdminRevenueReport = async () => {
   const db = getDb();
+  const settings = await getPlatformSettings();
   const paymentRows = await db.select().from(payments).orderBy(desc(payments.createdAt));
   const providerRows = await db.select().from(providers);
   const subscriptionRows = await db.select().from(providerSubscriptions);
@@ -684,10 +713,9 @@ export const getAdminRevenueReport = async () => {
     plan.percent = totalPlanCount > 0 ? Math.round((plan.count / totalPlanCount) * 100) : 0;
   });
 
-  const activeSubscribers = subscriptionRows.filter((subscription) => {
-    const expiry = subscription.expiresAt ?? subscription.renewalAt;
-    return subscription.status === "active" && !!expiry && expiry.getTime() > Date.now();
-  }).length;
+  const activeSubscribers = subscriptionRows.filter((subscription) =>
+    isEffectivelyActive(subscription, settings.subscriptionsPaused)
+  ).length;
 
   const twelveMonthsAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1));
 

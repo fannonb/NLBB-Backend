@@ -1,4 +1,5 @@
 import {
+  bigint,
   boolean,
   integer,
   numeric,
@@ -251,7 +252,20 @@ export const providerSubscriptions = pgTable("provider_subscriptions", {
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   lastPaymentId: uuid("last_payment_id"),
   creditBalance: numeric("credit_balance", { precision: 12, scale: 2 }).notNull().default("0"),
+  pausedAt: timestamp("paused_at", { withTimezone: true }),
+  pauseReason: text("pause_reason"),
+  remainingMsAtPause: bigint("remaining_ms_at_pause", { mode: "number" }),
+  pausedBy: uuid("paused_by"),
   ...timestamps,
+});
+
+export const platformSettings = pgTable("platform_settings", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  subscriptionsPaused: boolean("subscriptions_paused").notNull().default(false),
+  subscriptionsPausedAt: timestamp("subscriptions_paused_at", { withTimezone: true }),
+  subscriptionsPauseReason: text("subscriptions_pause_reason"),
+  subscriptionsPausedBy: uuid("subscriptions_paused_by"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const payments = pgTable("payments", {
