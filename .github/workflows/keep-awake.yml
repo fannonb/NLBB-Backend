@@ -1,0 +1,31 @@
+name: Keep API awake
+
+# Render's free plan puts the service to sleep after 15 minutes without traffic, and the
+# cold start (30s+) is longer than the mobile app waits on its first request. Pinging the
+# lightweight health endpoint (no database query) keeps the instance warm.
+on:
+  schedule:
+    # Every 5 minutes, offset from :00 when GitHub's scheduler is busiest. Scheduled runs
+    # can start several minutes late, so 5 minutes leaves margin under Render's 15.
+    - cron: "2-59/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: keep-awake
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Ping health endpoint
+        env:
+          # Override with a repository variable if the API moves.
+          HEALTH_URL: ${{ vars.KEEP_AWAKE_URL || 'https://api.nlbb.co.ke/api/health' }}
+        run: |
+          curl --fail --silent --show-error \
+            --max-time 90 --retry 3 --retry-delay 10 --retry-all-errors \
+            --output /dev/null \
+            --write-out "HTTP %{http_code} in %{time_total}s\n" \
+            "$HEALTH_URL"
