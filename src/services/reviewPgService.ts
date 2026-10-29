@@ -91,6 +91,7 @@ export const createReview = async (
     type: "review",
     actionType: "provider_reviews",
     actionId: reviewRow.id,
+    preference: "providerReview",
   });
 
   return {

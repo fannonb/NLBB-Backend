@@ -59,6 +59,7 @@ export const processSubscriptionReminders = async () => {
           type: "subscription",
           actionType: "provider_subscription",
           actionId,
+          preference: "accountAlert",
         });
         expiredNoticesSent += 1;
       }
@@ -87,6 +88,7 @@ export const processSubscriptionReminders = async () => {
         type: "subscription",
         actionType: "provider_subscription",
         actionId,
+        preference: "accountAlert",
       });
       remindersSent += 1;
     }

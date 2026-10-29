@@ -1,7 +1,9 @@
 import { Router } from "express";
-import { requireAuth } from "../middleware/auth";
+import { extractBearerToken, forgetUser, requireAuth, revokeSessionForToken } from "../middleware/auth";
+import { authLimiter, loginLimiter } from "../middleware/rateLimiters";
 import { supabaseAdmin } from "../lib/supabase";
 import { createSupabaseAuthClient } from "../lib/supabaseAuth";
+import { getAuthMethods, readVerifiedTokenClaims } from "../lib/verifySupabaseJwt";
 import { env } from "../config/env";
 import {
   ensureUserFromSupabaseAuth,
@@ -15,6 +17,7 @@ import {
   upsertUserProfile,
   upsertUserProfileSchema,
   deleteUserAccount,
+  removePushToken,
 } from "../services/userService";
 import { ApiError } from "../utils/apiError";
 import { asyncHandler } from "../utils/asyncHandler";
@@ -51,6 +54,9 @@ const changePasswordSchema = z.object({
 const forgotPasswordSchema = z.object({
   email: z.string().email(),
 });
+
+// Supabase "amr" methods that prove the caller opened a link sent to the account's inbox.
+const EMAIL_LINK_AMR_METHODS = new Set(["recovery", "otp", "magiclink"]);
 
 const resetPasswordSchema = z.object({
   /** The access_token from the Supabase recovery email deep-link */
@@ -108,6 +114,7 @@ const mapAuthSessionResponse = async (
 
 authRouter.post(
   "/register",
+  authLimiter,
   asyncHandler(async (req, res) => {
     const payload = registerSchema.parse(req.body);
     const authClient = createSupabaseAuthClient();
@@ -116,6 +123,10 @@ authRouter.post(
       email: payload.email.trim().toLowerCase(),
       password: payload.password,
       email_confirm: true,
+      // app_metadata is server-writable only; user_metadata can be edited by the user.
+      app_metadata: {
+        role: payload.role,
+      },
       user_metadata: {
         role: payload.role,
         full_name: payload.fullName,
@@ -191,6 +202,7 @@ authRouter.post(
 
 authRouter.post(
   "/login",
+  loginLimiter,
   asyncHandler(async (req, res) => {
     const payload = loginSchema.parse(req.body);
     const authClient = createSupabaseAuthClient();
@@ -244,19 +256,35 @@ authRouter.post(
   })
 );
 
-// Sign out the current Supabase session.
-// Note: clients should also call supabase.auth.signOut() to clear local tokens.
+const logoutSchema = z.object({
+  pushToken: z.string().min(10).optional(),
+});
+
+// Revoke this device's session and stop push delivery to it.
 authRouter.post(
   "/logout",
   requireAuth,
   asyncHandler(async (req, res) => {
-    await supabaseAdmin.auth.admin.signOut(req.auth!.sessionId);
-    res.json({ success: true, data: { revoked: true } });
+    const payload = logoutSchema.parse(req.body ?? {});
+    const accessToken = extractBearerToken(req.headers.authorization);
+
+    if (payload.pushToken) {
+      await removePushToken(req.auth!.uid, payload.pushToken);
+    }
+
+    const { error } = await supabaseAdmin.auth.admin.signOut(accessToken, "local");
+    revokeSessionForToken(accessToken);
+    if (error) {
+      console.error("[auth] logout revoke failed:", error.message);
+    }
+
+    res.json({ success: true, data: { revoked: !error } });
   })
 );
 
 authRouter.post(
   "/change-password",
+  authLimiter,
   requireAuth,
   asyncHandler(async (req, res) => {
     const payload = changePasswordSchema.parse(req.body);
@@ -279,6 +307,17 @@ authRouter.post(
       throw normalizeAuthError(updateError) ?? new ApiError(400, "Password update failed", "PASSWORD_UPDATE_FAILED");
     }
 
+    // Keep this device signed in; revoke every other session (incl. the one created by
+    // the verification sign-in above).
+    const { error: revokeError } = await supabaseAdmin.auth.admin.signOut(
+      extractBearerToken(req.headers.authorization),
+      "others"
+    );
+    forgetUser(req.auth!.uid);
+    if (revokeError) {
+      console.error("[auth] could not revoke other sessions after password change:", revokeError.message);
+    }
+
     res.json({ success: true, data: { updated: true } });
   })
 );
@@ -289,10 +328,12 @@ const deleteAccountSchema = z.object({
 
 authRouter.post(
   "/delete-account",
+  authLimiter,
   requireAuth,
   asyncHandler(async (req, res) => {
     const payload = deleteAccountSchema.parse(req.body);
     const result = await deleteUserAccount(req.auth!.uid, req.auth!.email, payload.password);
+    forgetUser(req.auth!.uid);
     res.json({ success: true, data: result });
   })
 );
@@ -374,6 +415,7 @@ authRouter.post(
  */
 authRouter.post(
   "/forgot-password",
+  authLimiter,
   asyncHandler(async (req, res) => {
     let sent = false;
 
@@ -423,18 +465,29 @@ authRouter.post(
  */
 authRouter.post(
   "/reset-password",
+  authLimiter,
   asyncHandler(async (req, res) => {
     const { token, newPassword } = resetPasswordSchema.parse(req.body);
 
     // Resolve the user ID from the recovery access token
     const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(token);
 
+    const invalidResetLink = new ApiError(
+      401,
+      "This reset link is invalid or has expired. Please request a new one.",
+      "INVALID_RESET_TOKEN"
+    );
+
     if (userError || !userData.user) {
-      throw new ApiError(
-        401,
-        "This reset link is invalid or has expired. Please request a new one.",
-        "INVALID_RESET_TOKEN"
-      );
+      throw invalidResetLink;
+    }
+
+    // Only tokens minted from an emailed link may reset a password. An ordinary login
+    // token (amr "password") must go through /change-password, which checks the
+    // current password, otherwise a stolen session could take over the account.
+    const amrMethods = getAuthMethods(readVerifiedTokenClaims(token));
+    if (!amrMethods.some((method) => EMAIL_LINK_AMR_METHODS.has(method))) {
+      throw invalidResetLink;
     }
 
     const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
@@ -447,6 +500,13 @@ authRouter.post(
         normalizeAuthError(updateError) ??
         new ApiError(400, "Password could not be updated. Please try again.", "PASSWORD_UPDATE_FAILED")
       );
+    }
+
+    // Sign the account out everywhere, including the recovery session itself.
+    const { error: revokeError } = await supabaseAdmin.auth.admin.signOut(token, "global");
+    forgetUser(userData.user.id);
+    if (revokeError) {
+      console.error("[auth] could not revoke sessions after password reset:", revokeError.message);
     }
 
     res.json({ success: true, data: { reset: true } });

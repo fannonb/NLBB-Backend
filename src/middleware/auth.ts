@@ -3,11 +3,12 @@ import type { NextFunction, Request, Response } from "express";
 import { env } from "../config/env";
 import { getDb } from "../db/client";
 import { supabaseAdmin } from "../lib/supabase";
-import { verifySupabaseAccessToken } from "../lib/verifySupabaseJwt";
+import { readVerifiedTokenClaims, verifySupabaseAccessToken } from "../lib/verifySupabaseJwt";
 import { ensureUserFromSupabaseAuth } from "../services/userService";
 import { providers, users } from "../db/schema";
 import type { UserRole } from "../types/domain";
 import { ApiError } from "../utils/apiError";
+import { userLimiter } from "./rateLimiters";
 
 export interface AuthenticatedUser {
   uid: string;
@@ -47,16 +48,76 @@ const getCachedUser = (uid: string) => {
   return null;
 };
 
+const AUTH_CACHE_PRUNE_THRESHOLD = 5_000;
+
+const pruneExpiredEntries = (cache: Map<string, CachedAuthEntry>, now: number) => {
+  for (const [key, entry] of cache) {
+    if (entry.expiresAt <= now) {
+      cache.delete(key);
+    }
+  }
+};
+
 const rememberAuthenticatedUser = (token: string, user: AuthenticatedUser) => {
+  const now = Date.now();
+  if (authCache.size >= AUTH_CACHE_PRUNE_THRESHOLD) {
+    pruneExpiredEntries(authCache, now);
+    pruneExpiredEntries(userCache, now);
+  }
+
   const entry = {
     user,
-    expiresAt: Date.now() + AUTH_CACHE_TTL_MS,
+    expiresAt: now + AUTH_CACHE_TTL_MS,
   };
   authCache.set(token, entry);
   userCache.set(user.uid, entry);
 };
 
-const extractBearerToken = (authorization?: string) => {
+// Access tokens verified locally (HS256) stay valid until they expire even after Supabase
+// revokes the session, so remember logged-out sessions until their tokens expire.
+// In-memory is enough for the single Render instance; a restart only re-opens tokens
+// that expire within the hour anyway.
+const revokedSessions = new Map<string, number>();
+
+const isSessionRevoked = (sessionId: string | undefined) => {
+  if (!sessionId) return false;
+  const expiresAt = revokedSessions.get(sessionId);
+  if (expiresAt === undefined) return false;
+  if (expiresAt <= Date.now()) {
+    revokedSessions.delete(sessionId);
+    return false;
+  }
+  return true;
+};
+
+/** Call with a token that requireAuth already verified. */
+export const revokeSessionForToken = (token: string) => {
+  const claims = readVerifiedTokenClaims(token);
+  if (!claims?.session_id) return;
+  const expiresAt = claims.exp ? claims.exp * 1000 : Date.now() + 60 * 60 * 1000;
+  revokedSessions.set(claims.session_id, expiresAt);
+  forgetAccessToken(token);
+};
+
+/** Drop cached auth for a token (logout) or a user (password change, role change). */
+export const forgetAccessToken = (token: string) => {
+  const cached = authCache.get(token);
+  authCache.delete(token);
+  if (cached) {
+    userCache.delete(cached.user.uid);
+  }
+};
+
+export const forgetUser = (uid: string) => {
+  userCache.delete(uid);
+  for (const [token, entry] of authCache) {
+    if (entry.user.uid === uid) {
+      authCache.delete(token);
+    }
+  }
+};
+
+export const extractBearerToken = (authorization?: string) => {
   if (!authorization) {
     throw new ApiError(401, "Missing bearer token", "UNAUTHORIZED");
   }
@@ -151,6 +212,9 @@ const getSupabaseUserWithTimeout = async (token: string) => {
 const resolveAccessTokenUncached = async (token: string): Promise<AuthenticatedUser> => {
   if (env.SUPABASE_JWT_SECRET) {
     const claims = verifySupabaseAccessToken(token, env.SUPABASE_JWT_SECRET);
+    if (claims && isSessionRevoked(claims.session_id)) {
+      throw new ApiError(401, "Session has been signed out", "UNAUTHORIZED");
+    }
     if (claims) {
       const cachedUser = getCachedUser(claims.sub);
       if (cachedUser) {
@@ -228,13 +292,13 @@ export const optionalAuth = async (req: Request, _res: Response, next: NextFunct
   return next();
 };
 
-export const requireAuth = async (req: Request, _res: Response, next: NextFunction) => {
+export const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   try {
     req.auth = await resolveAccessToken(req.headers.authorization);
-    return next();
   } catch (error) {
     return next(error);
   }
+  return userLimiter(req, res, next);
 };
 
 export const requireAdminAccess = async (req: Request, _res: Response, next: NextFunction) => {

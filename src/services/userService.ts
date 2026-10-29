@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db/client";
 import { providers, pushTokens, userPreferences, userProfiles, users } from "../db/schema";
@@ -6,6 +6,7 @@ import { createSupabaseAuthClient } from "../lib/supabaseAuth";
 import { supabaseAdmin } from "../lib/supabase";
 import type { UserRole } from "../types/domain";
 import { ApiError } from "../utils/apiError";
+import { allowedMediaUrlSchema } from "../utils/mediaUrl";
 import type { User } from "@supabase/supabase-js";
 
 export const upsertPushTokenSchema = z.object({
@@ -19,7 +20,7 @@ export const upsertUserProfileSchema = z.object({
   phone: z.string().min(9),
   role: z.enum(["customer", "provider"] as [UserRole, UserRole]),
   location: z.string().optional(),
-  avatar: z.string().url().optional(),
+  avatar: allowedMediaUrlSchema.optional(),
 });
 
 export const notificationSettingsSchema = z.object({
@@ -77,6 +78,11 @@ const userOwnsProviderProfile = async (uid: string) => {
   return !!provider;
 };
 
+// Only roles a user may pick for themselves. Admin is granted in the database only,
+// never from Supabase metadata (user_metadata is writable by the user).
+const toSelfAssignableRole = (value: unknown): UserRole | null =>
+  value === "customer" || value === "provider" ? value : null;
+
 const fallbackDisplayName = (email: string | undefined, fullName?: string | null) => {
   const normalizedFullName = fullName?.trim();
   if (normalizedFullName) {
@@ -103,9 +109,11 @@ export const ensureUserFromSupabaseAuth = async (
   const db = getDb();
   const now = new Date();
   const metadata = authUser.user_metadata ?? {};
-  const role = (overrides?.role ??
-    metadata.role ??
-    "customer") as UserRole;
+  const requestedRole =
+    toSelfAssignableRole(overrides?.role) ??
+    toSelfAssignableRole(authUser.app_metadata?.role) ??
+    toSelfAssignableRole(metadata.role) ??
+    "customer";
   const email = authUser.email ?? `${authUser.id}@supabase.local`;
   const phone =
     overrides?.phone ??
@@ -120,6 +128,8 @@ export const ensureUserFromSupabaseAuth = async (
     (typeof metadata.location === "string" ? metadata.location : null);
 
   const [existingUser] = await db.select().from(users).where(eq(users.id, authUser.id)).limit(1);
+  // An existing user's role is owned by the database; requestedRole only seeds new rows.
+  const role = (existingUser?.role as UserRole | undefined) ?? requestedRole;
   if (!existingUser) {
     await db.insert(users).values({
       id: authUser.id,
@@ -137,7 +147,6 @@ export const ensureUserFromSupabaseAuth = async (
       .set({
         email,
         phone: phone ?? existingUser.phone,
-        role: role ?? existingUser.role,
         emailVerified: authUser.email_confirmed_at != null,
         updatedAt: now,
       })
@@ -213,19 +222,24 @@ export const upsertUserProfile = async (
   const now = new Date();
   const requestedEmail = payload.email?.trim().toLowerCase();
 
-  if (requestedEmail) {
-    const [emailOwner] = await db.select({ id: users.id }).from(users).where(eq(users.email, requestedEmail)).limit(1);
-    if (emailOwner && emailOwner.id !== uid) {
-      throw new ApiError(409, "Email is already in use", "EMAIL_IN_USE");
-    }
+  const [existingUser] = await db.select().from(users).where(eq(users.id, uid)).limit(1);
+  const currentEmail = (existingUser?.email ?? email)?.trim().toLowerCase();
+
+  // The login email lives in Supabase Auth. Changing only our copy would desync login,
+  // password checks, and let users squat on unverified addresses, so reject it here.
+  if (requestedEmail && currentEmail && requestedEmail !== currentEmail) {
+    throw new ApiError(
+      400,
+      "Your login email can't be changed in the app yet. Contact support to update it.",
+      "EMAIL_CHANGE_UNSUPPORTED"
+    );
   }
 
-  const [existingUser] = await db.select().from(users).where(eq(users.id, uid)).limit(1);
-  const roleForWrite = existingUser?.role ?? payload.role;
+  const roleForWrite = (existingUser?.role as UserRole | undefined) ?? payload.role;
   if (!existingUser) {
     await db.insert(users).values({
       id: uid,
-      email: requestedEmail ?? email ?? `${uid}@nlbb.local`,
+      email: currentEmail ?? `${uid}@nlbb.local`,
       phone: payload.phone,
       role: roleForWrite,
       status: "active",
@@ -237,7 +251,6 @@ export const upsertUserProfile = async (
     await db
       .update(users)
       .set({
-        email: requestedEmail ?? email ?? existingUser.email,
         phone: payload.phone,
         updatedAt: now,
       })
@@ -266,7 +279,7 @@ export const upsertUserProfile = async (
       .where(eq(userProfiles.userId, uid));
   }
 
-  if (payload.role === "provider") {
+  if (roleForWrite === "provider") {
     const [existingProvider] = await db
       .select({ id: providers.id })
       .from(providers)
@@ -369,6 +382,13 @@ export const upsertPushToken = async (
     createdAt: now,
   });
   console.log("[push] push token registered", { userId: uid, platform: payload.platform });
+};
+
+export const removePushToken = async (uid: string, token: string) => {
+  const db = getDb();
+  await db
+    .delete(pushTokens)
+    .where(and(eq(pushTokens.userId, uid), eq(pushTokens.pushToken, token)));
 };
 
 export const getPushTokensForUser = async (uid: string): Promise<string[]> => {

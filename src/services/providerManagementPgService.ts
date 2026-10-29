@@ -9,12 +9,15 @@ import {
   providerVerificationEvents,
   providerWorkingHours,
   providers,
+  userProfiles,
+  users,
 } from "../db/schema";
 import type { Provider, Service, WorkingHoursDay } from "../types/domain";
 import { ApiError } from "../utils/apiError";
 import { allSlugsForCanonical, canonicalCategorySlug } from "../utils/categorySlug";
-import { resolvePublicMediaUrl } from "../utils/mediaUrl";
+import { allowedMediaUrlSchema, MAX_GALLERY_IMAGES, resolvePublicMediaUrl } from "../utils/mediaUrl";
 import { getSubscription, subscriptionIsActive } from "./subscriptionPgService";
+import { removeUnreferencedProviderMedia } from "./mediaStorageService";
 
 export const providerServiceSchema = z.object({
   id: z.string().min(1),
@@ -83,14 +86,16 @@ export const upsertProviderSchema = z.object({
   priceFrom: z.number().nonnegative(),
   services: z.array(providerServiceSchema).optional(),
   coordinates: z.object({ lat: z.number(), lng: z.number() }).optional(),
-  coverImage: z.string().url().optional(),
-  avatar: z.string().url().optional(),
-  images: z.array(z.string().url()).optional(),
-  galleryImages: z.array(z.string().url()).optional(),
+  coverImage: allowedMediaUrlSchema.optional(),
+  avatar: allowedMediaUrlSchema.optional(),
+  images: z.array(allowedMediaUrlSchema).max(MAX_GALLERY_IMAGES).optional(),
+  galleryImages: z.array(allowedMediaUrlSchema).max(MAX_GALLERY_IMAGES).optional(),
   workingHours: z.array(workingHoursSchema).optional(),
   instagram: z.string().min(1).optional(),
   facebook: z.string().min(1).optional(),
   mpesaPhone: z.string().min(9).optional(),
+  /** Owner's display name; saved with the profile so the app needs one request, not two. */
+  ownerName: z.string().trim().min(2).optional(),
 });
 
 export const registrationDetailsSchema = z.object({
@@ -426,6 +431,50 @@ const syncProviderMedia = async (providerId: string, payload: z.infer<typeof ups
   }
 };
 
+// Keeps the owner's account (name, login phone, avatar) in step with the business profile.
+const syncOwnerAccount = async (ownerUserId: string, payload: z.infer<typeof upsertProviderSchema>) => {
+  const db = getDb();
+  const now = new Date();
+  await db.update(users).set({ phone: payload.phone, updatedAt: now }).where(eq(users.id, ownerUserId));
+  if (payload.ownerName || payload.avatar) {
+    await db
+      .update(userProfiles)
+      .set({
+        ...(payload.ownerName ? { fullName: payload.ownerName } : {}),
+        ...(payload.avatar ? { avatarUrl: payload.avatar } : {}),
+        updatedAt: now,
+      })
+      .where(eq(userProfiles.userId, ownerUserId));
+  }
+};
+
+// Runs after a save without blocking it; a cleanup failure must never fail the save.
+const scheduleOrphanedMediaCleanup = (ownerUserId: string, payload: z.infer<typeof upsertProviderSchema>) => {
+  void (async () => {
+    const db = getDb();
+    const [profile] = await db
+      .select({ avatarUrl: userProfiles.avatarUrl })
+      .from(userProfiles)
+      .where(eq(userProfiles.userId, ownerUserId))
+      .limit(1);
+    const referencedUrls = [
+      payload.coverImage,
+      payload.avatar,
+      ...(payload.galleryImages ?? payload.images ?? []),
+      profile?.avatarUrl,
+    ].filter((url): url is string => Boolean(url));
+    const { removed } = await removeUnreferencedProviderMedia(ownerUserId, referencedUrls);
+    if (removed > 0) {
+      console.log("[media] removed unreferenced provider uploads", { ownerUserId, removed });
+    }
+  })().catch((error) => {
+    console.warn("[media] orphaned upload cleanup failed", {
+      ownerUserId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+};
+
 const syncWorkingHours = async (providerId: string, payload: z.infer<typeof upsertProviderSchema>) => {
   const db = getDb();
   await db.delete(providerWorkingHours).where(eq(providerWorkingHours.providerId, providerId));
@@ -523,6 +572,8 @@ export const upsertProviderProfile = async (
       : payload.priceFrom;
     await syncWorkingHours(created.id, payload);
     await syncProviderMedia(created.id, payload);
+    await syncOwnerAccount(ownerUserId, payload);
+    scheduleOrphanedMediaCleanup(ownerUserId, payload);
     await db
       .update(providers)
       .set({
@@ -560,6 +611,8 @@ export const upsertProviderProfile = async (
     : payload.priceFrom;
   await syncWorkingHours(existing.id, payload);
   await syncProviderMedia(existing.id, payload);
+  await syncOwnerAccount(ownerUserId, payload);
+  scheduleOrphanedMediaCleanup(ownerUserId, payload);
   if (payload.services && priceFrom > 0) {
     await db
       .update(providers)

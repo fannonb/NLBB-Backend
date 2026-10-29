@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { notifications } from "../db/schema";
 import type { Notification } from "../types/domain";
-import { getPushTokensForUser } from "./userService";
+import { getPushTokensForUser, getUserPreferences, type UserPreferences } from "./userService";
 
 const EXPO_PUSH_API_URL = "https://exp.host/--/api/v2/push/send";
 const EXPO_PUSH_RECEIPTS_API_URL = "https://exp.host/--/api/v2/push/getReceipts";
@@ -15,7 +15,23 @@ interface CreateNotificationInput {
   type: Notification["type"];
   actionType?: Notification["actionType"];
   actionId?: string;
+  /**
+   * The user preference that controls push delivery for this notification. The in-app
+   * notification is always stored; only the push is skipped when the user opted out.
+   * Omit for notifications that must always be pushed.
+   */
+  preference?: NotificationPreferenceKey;
 }
+
+export type NotificationPreferenceKey = keyof UserPreferences["notificationSettings"];
+
+const isPushAllowedByPreferences = async (userId: string, preference?: NotificationPreferenceKey) => {
+  if (!preference) {
+    return true;
+  }
+  const preferences = await getUserPreferences(userId);
+  return preferences.notificationSettings[preference] !== false;
+};
 
 interface PushNotificationPayload {
   notificationId: string;
@@ -51,8 +67,18 @@ export const createNotification = async (input: CreateNotificationInput) => {
     .returning();
 
   // Don't block booking/API latency on Expo push delivery.
-  void getPushTokensForUser(input.userId)
-    .then(async (tokens) => {
+  void isPushAllowedByPreferences(input.userId, input.preference)
+    .then(async (allowed) => {
+      if (!allowed) {
+        console.log("[push] skipped by user preference", {
+          userId: input.userId,
+          notificationId: notification.id,
+          preference: input.preference,
+        });
+        return;
+      }
+
+      const tokens = await getPushTokensForUser(input.userId);
       console.log("[push] notification created", {
         userId: input.userId,
         notificationId: notification.id,

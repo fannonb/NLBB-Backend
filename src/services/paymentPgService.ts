@@ -195,6 +195,7 @@ const notifySuccessfulBookingPayment = async (payment: {
       type: "payment",
       actionType: "customer_bookings",
       actionId: booking.id,
+      preference: "bookingUpdate",
     }),
     createNotification({
       userId: booking.providerOwnerUserId,
@@ -203,6 +204,7 @@ const notifySuccessfulBookingPayment = async (payment: {
       type: "payment",
       actionType: "provider_appointment_detail",
       actionId: booking.id,
+      preference: "bookingUpdate",
     }),
   ]);
 };
@@ -300,6 +302,7 @@ const finalizePaymentStatus = async (
         type: "payment",
         actionType: "provider_subscription",
         actionId: payment.id,
+        preference: "accountAlert",
       });
     }
   } else {

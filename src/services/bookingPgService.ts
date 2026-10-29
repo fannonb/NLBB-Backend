@@ -356,6 +356,7 @@ export const createBooking = async (
     type: "booking",
     actionType: "provider_appointment_detail",
     actionId: bookingRow.id,
+    preference: "bookingConfirmation",
   });
 
   await createNotification({
@@ -365,6 +366,7 @@ export const createBooking = async (
     type: "booking",
     actionType: "customer_bookings",
     actionId: bookingRow.id,
+    preference: "bookingConfirmation",
   });
 
   const [customerProfile] = await db
@@ -548,6 +550,7 @@ export const updateBookingStatus = async (
     type: "booking",
     actionType: "customer_bookings",
     actionId: updated.id,
+    preference: nextStatus === "accepted" ? "bookingConfirmation" : "bookingUpdate",
   });
 
   if (actor.role === "customer" && nextStatus === "cancelled") {
@@ -565,6 +568,7 @@ export const updateBookingStatus = async (
         type: "booking",
         actionType: "provider_appointment_detail",
         actionId: updated.id,
+        preference: "bookingUpdate",
       });
     }
   }

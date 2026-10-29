@@ -95,3 +95,56 @@ export const uploadProviderMedia = async (
     dataUri
   );
 };
+
+// Uploads happen before the profile is saved, so images from cancelled edits or replaced
+// photos are never referenced. Files younger than this are kept so an edit still in
+// progress (e.g. on another device) can't lose a fresh upload.
+const ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Deletes files in the owner's provider-media folders that no saved URL references.
+ * Only touches `<ownerUserId>/...` in the provider avatar, cover and gallery buckets.
+ */
+export const removeUnreferencedProviderMedia = async (ownerUserId: string, referencedUrls: string[]) => {
+  const referenced = referencedUrls.map((url) => {
+    try {
+      return decodeURI(url.split("?")[0]);
+    } catch {
+      return url;
+    }
+  });
+  const isReferenced = (bucket: string, path: string) =>
+    referenced.some((url) => url.endsWith(`/${bucket}/${path}`));
+
+  const buckets = [
+    env.SUPABASE_PROVIDER_AVATAR_BUCKET,
+    env.SUPABASE_PROVIDER_COVER_BUCKET,
+    env.SUPABASE_PROVIDER_GALLERY_BUCKET,
+  ];
+
+  let removed = 0;
+  for (const bucket of buckets) {
+    const { data: objects, error } = await supabaseAdmin.storage.from(bucket).list(ownerUserId, { limit: 1000 });
+    if (error || !objects) {
+      continue;
+    }
+
+    const stalePaths = objects
+      .filter((object) => {
+        // Folders come back without an id or timestamp.
+        if (!object.id || !object.created_at) return false;
+        return Date.now() - new Date(object.created_at).getTime() > ORPHAN_MIN_AGE_MS;
+      })
+      .map((object) => `${ownerUserId}/${object.name}`)
+      .filter((path) => !isReferenced(bucket, path));
+
+    if (stalePaths.length > 0) {
+      const { error: removeError } = await supabaseAdmin.storage.from(bucket).remove(stalePaths);
+      if (!removeError) {
+        removed += stalePaths.length;
+      }
+    }
+  }
+
+  return { removed };
+};

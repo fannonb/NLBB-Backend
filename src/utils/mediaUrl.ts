@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { env } from "../config/env";
 import { supabaseAdmin } from "../lib/supabase";
 
@@ -68,3 +69,35 @@ export const resolvePublicMediaUrl = (
 
   return storageCandidate;
 };
+
+// Images must come from our own upload endpoints. Accepting any URL let clients skip
+// the upload checks (type/size) and embed third-party images or tracking pixels.
+// images.unsplash.com stays allowed because the apps use Unsplash photos as defaults.
+const ALLOWED_EXTERNAL_IMAGE_HOSTS = new Set(["images.unsplash.com"]);
+export const MAX_GALLERY_IMAGES = 12;
+
+export const isAllowedMediaUrl = (value: string) => {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+
+  const storagePrefix = `${normalizeBaseUrl(env.SUPABASE_URL)}/storage/v1/object/public/`;
+  if (value.startsWith(storagePrefix)) {
+    return true;
+  }
+
+  const appBaseUrl = normalizeBaseUrl(env.APP_BASE_URL);
+  if (appBaseUrl && value.startsWith(`${appBaseUrl}/uploads/`)) {
+    return true;
+  }
+
+  return url.protocol === "https:" && ALLOWED_EXTERNAL_IMAGE_HOSTS.has(url.hostname);
+};
+
+export const allowedMediaUrlSchema = z
+  .string()
+  .url()
+  .refine(isAllowedMediaUrl, { message: "Images must be uploaded through the NLBB app" });
