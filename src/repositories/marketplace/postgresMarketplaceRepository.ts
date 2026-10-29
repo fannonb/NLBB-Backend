@@ -193,17 +193,10 @@ const fetchProvidersBase = async () => {
     .orderBy(asc(providers.name));
 };
 
-// Pass ALL_LISTED_PROVIDERS to load details in the same round trip as the provider list
-// (as a subquery) instead of waiting for the list to learn the ids first.
-const ALL_LISTED_PROVIDERS = "all-listed" as const;
-
-const fetchProviderDetails = async (providerIds: string[] | typeof ALL_LISTED_PROVIDERS) => {
+const fetchProviderDetails = async (providerIds: string[]) => {
   const db = getDb();
-  const listedProviderIds = db.select({ id: providers.id }).from(providers).where(ne(providers.adminStatus, "deleted"));
-  const providerIdFilter = (column: Parameters<typeof inArray>[0]) =>
-    providerIds === ALL_LISTED_PROVIDERS ? inArray(column, listedProviderIds) : inArray(column, providerIds);
 
-  if (providerIds !== ALL_LISTED_PROVIDERS && providerIds.length === 0) {
+  if (providerIds.length === 0) {
     return {
       servicesByProvider: new Map<string, Provider["services"]>(),
       mediaByProvider: new Map<string, Array<{ kind: string; url: string }>>(),
@@ -234,7 +227,7 @@ const fetchProviderDetails = async (providerIds: string[] | typeof ALL_LISTED_PR
         sortOrder: providerServices.sortOrder,
       })
       .from(providerServices)
-      .where(providerIdFilter(providerServices.providerId))
+      .where(inArray(providerServices.providerId, providerIds))
       .orderBy(asc(providerServices.providerId), asc(providerServices.sortOrder), asc(providerServices.name)),
     db
       .select({
@@ -246,7 +239,7 @@ const fetchProviderDetails = async (providerIds: string[] | typeof ALL_LISTED_PR
         createdAt: providerMedia.createdAt,
       })
       .from(providerMedia)
-      .where(providerIdFilter(providerMedia.providerId))
+      .where(inArray(providerMedia.providerId, providerIds))
       .orderBy(asc(providerMedia.providerId), asc(providerMedia.sortOrder), asc(providerMedia.createdAt)),
     db
       .select({
@@ -257,7 +250,7 @@ const fetchProviderDetails = async (providerIds: string[] | typeof ALL_LISTED_PR
         closeTime: providerWorkingHours.closeTime,
       })
       .from(providerWorkingHours)
-      .where(providerIdFilter(providerWorkingHours.providerId))
+      .where(inArray(providerWorkingHours.providerId, providerIds))
       .orderBy(asc(providerWorkingHours.providerId), asc(providerWorkingHours.weekday)),
     db
       .select({
@@ -270,7 +263,7 @@ const fetchProviderDetails = async (providerIds: string[] | typeof ALL_LISTED_PR
         createdAt: providerSubscriptions.createdAt,
       })
       .from(providerSubscriptions)
-      .where(providerIdFilter(providerSubscriptions.providerId))
+      .where(inArray(providerSubscriptions.providerId, providerIds))
       .orderBy(desc(providerSubscriptions.createdAt)),
   ]);
 
@@ -339,15 +332,8 @@ const fetchProviderDetails = async (providerIds: string[] | typeof ALL_LISTED_PR
   return { servicesByProvider, mediaByProvider, hoursByProvider, subscriptionByProvider };
 };
 
-// Categories change rarely (admin edits); every app launch and tab focus asks for them.
-const CATEGORIES_CACHE_MS = 60_000;
-let categoriesCache: { at: number; value: MarketplaceCategory[] } | null = null;
-
 export const createPostgresMarketplaceRepository = (): MarketplaceRepository => ({
   async listCategories(): Promise<MarketplaceCategory[]> {
-    if (categoriesCache && Date.now() - categoriesCache.at < CATEGORIES_CACHE_MS) {
-      return categoriesCache.value;
-    }
     const db = getDb();
     const rows = await db
       .select({
@@ -382,20 +368,13 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
       }
     }
 
-    const sorted = [...byCanonical.values()].sort(
+    return [...byCanonical.values()].sort(
       (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name),
     );
-    categoriesCache = { at: Date.now(), value: sorted };
-    return sorted;
   },
 
   async listProviders(filters, currentUser) {
-    // One parallel round trip; filtering happens in memory below.
-    const [rows, details, settings] = await Promise.all([
-      fetchProvidersBase(),
-      fetchProviderDetails(ALL_LISTED_PROVIDERS),
-      getPlatformSettings(),
-    ]);
+    const rows = await fetchProvidersBase();
     const normalizedSearch = filters.search?.trim().toLowerCase();
     const normalizedCategory = normalizeCategory(filters.category);
 
@@ -427,6 +406,8 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
       return true;
     });
 
+    const details = await fetchProviderDetails(filteredRows.map((row) => row.id));
+    const settings = await getPlatformSettings();
     const providersList = filteredRows.map((row) =>
       buildProviderRecord(
         row,
@@ -449,7 +430,7 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
 
   async getProviderById(id, currentUser) {
     const db = getDb();
-    const rowsQuery = db
+    const rows = await db
       .select({
         id: providers.id,
         ownerUserId: providers.ownerUserId,
@@ -481,16 +462,13 @@ export const createPostgresMarketplaceRepository = (): MarketplaceRepository => 
       .where(and(eq(providers.id, id), ne(providers.adminStatus, "deleted")))
       .limit(1);
 
-    const [rows, details, settings] = await Promise.all([
-      rowsQuery,
-      fetchProviderDetails([id]),
-      getPlatformSettings(),
-    ]);
-
     const row = rows[0];
     if (!row) {
       return null;
     }
+
+    const details = await fetchProviderDetails([id]);
+    const settings = await getPlatformSettings();
     const provider = buildProviderRecord(
       row,
       details.servicesByProvider,
