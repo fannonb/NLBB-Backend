@@ -3,6 +3,8 @@ import cors from "cors";
 import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
+import { logPath } from "./utils/logPath";
+import { browserSession } from "./middleware/browserSession";
 import { allowedOrigins, trustProxy } from "./config/env";
 import { requestContext } from "./middleware/requestContext";
 import { adminRouter } from "./routes/admin";
@@ -47,7 +49,7 @@ app.use(
     return [
       requestId,
       tokens.method(req, res),
-      tokens.url(req, res),
+      logPath(req.originalUrl || req.url),
       tokens.status(req, res),
       tokens["response-time"](req, res),
       "ms",
@@ -55,6 +57,7 @@ app.use(
   })
 );
 app.use(apiLimiter);
+app.use(browserSession);
 
 app.get("/", (_req, res) => {
   res.json({

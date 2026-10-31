@@ -1,5 +1,8 @@
+import { clearBrowserSession, isBrowserSession, readSessionCookie, sessionResponse } from "../middleware/browserSession";
+import { sql } from "drizzle-orm";
+import { getDb } from "../db/client";
 import { Router } from "express";
-import { extractBearerToken, forgetUser, requireAuth, revokeSessionForToken } from "../middleware/auth";
+import { extractBearerToken, requireAuth, requireActiveSession, revokeSessionForToken } from "../middleware/auth";
 import { authLimiter, loginLimiter } from "../middleware/rateLimiters";
 import { supabaseAdmin } from "../lib/supabase";
 import { createSupabaseAuthClient } from "../lib/supabaseAuth";
@@ -196,7 +199,7 @@ authRouter.post(
       console.error("[auth] admin registration alert failed:", error);
     });
 
-    res.status(201).json({ success: true, data: response });
+    res.status(201).json({ success: true, data: sessionResponse(req, res, response) });
   })
 );
 
@@ -223,14 +226,14 @@ authRouter.post(
       data.user
     );
 
-    res.json({ success: true, data: response });
+    res.json({ success: true, data: sessionResponse(req, res, response) });
   })
 );
 
 authRouter.post(
   "/refresh",
   asyncHandler(async (req, res) => {
-    const payload = refreshSchema.parse(req.body);
+    const payload = refreshSchema.parse(isBrowserSession(req) ? { refreshToken: readSessionCookie(req, "refresh") } : req.body);
     const authClient = createSupabaseAuthClient();
 
     const { data, error } = await authClient.auth.refreshSession({
@@ -238,6 +241,7 @@ authRouter.post(
     });
 
     if (error || !data.session) {
+      if (isBrowserSession(req)) clearBrowserSession(res);
       throw normalizeAuthError(error) ?? new ApiError(401, "Invalid refresh token", "INVALID_REFRESH_TOKEN");
     }
 
@@ -247,11 +251,11 @@ authRouter.post(
 
     res.json({
       success: true,
-      data: {
+      data: sessionResponse(req, res, {
         accessToken: data.session.access_token,
         refreshToken: data.session.refresh_token,
         expiresIn: data.session.expires_in ?? 3600,
-      },
+      }),
     });
   })
 );
@@ -273,12 +277,13 @@ authRouter.post(
     }
 
     const { error } = await supabaseAdmin.auth.admin.signOut(accessToken, "local");
-    revokeSessionForToken(accessToken);
+    await revokeSessionForToken(accessToken);
     if (error) {
       console.error("[auth] logout revoke failed:", error.message);
     }
 
-    res.json({ success: true, data: { revoked: !error } });
+    clearBrowserSession(res);
+    res.json({ success: true, data: { revoked: true } });
   })
 );
 
@@ -313,7 +318,7 @@ authRouter.post(
       extractBearerToken(req.headers.authorization),
       "others"
     );
-    forgetUser(req.auth!.uid);
+    await getDb().execute(sql`delete from auth.sessions where user_id = ${req.auth!.uid}::uuid and id <> ${req.auth!.sessionId}::uuid`);
     if (revokeError) {
       console.error("[auth] could not revoke other sessions after password change:", revokeError.message);
     }
@@ -333,7 +338,7 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     const payload = deleteAccountSchema.parse(req.body);
     const result = await deleteUserAccount(req.auth!.uid, req.auth!.email, payload.password);
-    forgetUser(req.auth!.uid);
+    clearBrowserSession(res);
     res.json({ success: true, data: result });
   })
 );
@@ -482,6 +487,8 @@ authRouter.post(
       throw invalidResetLink;
     }
 
+    await requireActiveSession(token, userData.user.id);
+
     // Only tokens minted from an emailed link may reset a password. An ordinary login
     // token (amr "password") must go through /change-password, which checks the
     // current password, otherwise a stolen session could take over the account.
@@ -504,7 +511,7 @@ authRouter.post(
 
     // Sign the account out everywhere, including the recovery session itself.
     const { error: revokeError } = await supabaseAdmin.auth.admin.signOut(token, "global");
-    forgetUser(userData.user.id);
+    await getDb().execute(sql`delete from auth.sessions where user_id = ${userData.user.id}::uuid`);
     if (revokeError) {
       console.error("[auth] could not revoke sessions after password reset:", revokeError.message);
     }

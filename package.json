@@ -4,6 +4,7 @@
   "private": true,
   "description": "Backend API for NLBB beauty marketplace",
   "scripts": {
+    "test:security": "node --import tsx --test tests/security-regression.test.ts",
     "dev": "tsx watch src/index.ts",
     "dev:local": "powershell -ExecutionPolicy Bypass -File ./scripts/start-local-dev.ps1",
     "mpesa:tunnel": "powershell -ExecutionPolicy Bypass -File ./scripts/start-mpesa-tunnel.ps1",

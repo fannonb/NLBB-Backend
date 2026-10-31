@@ -2,7 +2,7 @@ import axios from "axios";
 import { desc, eq } from "drizzle-orm";
 import { env } from "../config/env";
 import { assertMpesaPaymentsEnabled } from "../config/features";
-import { getDb } from "../db/client";
+import { afterDbCommit, getDb, withDbTransaction } from "../db/client";
 import { bookings, paymentCallbacks, paymentEvents, payments, providers } from "../db/schema";
 import type { Payment } from "../types/domain";
 import { ApiError } from "../utils/apiError";
@@ -256,80 +256,86 @@ const finalizePaymentStatus = async (
     eventType: string;
   }
 ) => {
-  const db = getDb();
-  const nextStatus = outcome.success ? "success" : "failed";
-  const amountPaid = outcome.amountPaid ?? Number((payment as { amount?: unknown }).amount ?? 0);
+  return withDbTransaction(async () => {
+    const db = getDb();
+    // Provider lock also serializes different payments extending one subscription.
+    await db.select({ id: providers.id }).from(providers)
+      .where(eq(providers.id, payment.providerId)).for("update");
+    const [current] = await db.select().from(payments).where(eq(payments.id, payment.id)).for("update");
+    if (!current) throw new ApiError(404, "Payment not found", "PAYMENT_NOT_FOUND");
+    if (current.status === "success" || current.status === "failed") return current.status;
+    payment = current;
+    const nextStatus = outcome.success ? "success" : "failed";
+    const amountPaid = outcome.amountPaid ?? Number((payment as { amount?: unknown }).amount ?? 0);
 
-  if (payment.status === nextStatus) {
-    return;
-  }
+    await db
+      .update(payments)
+      .set({
+        status: nextStatus,
+        mpesaReceiptNumber: outcome.mpesaReceiptNumber ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(payments.id, payment.id));
 
-  await db
-    .update(payments)
-    .set({
-      status: nextStatus,
-      mpesaReceiptNumber: outcome.mpesaReceiptNumber ?? null,
-      updatedAt: new Date(),
-    })
-    .where(eq(payments.id, payment.id));
-
-  await db.insert(paymentEvents).values({
-    paymentId: payment.id,
-    eventType: outcome.eventType,
-    payloadJson: outcome.rawPayload ? JSON.stringify(outcome.rawPayload) : null,
-    createdAt: new Date(),
-  });
-
-  if (outcome.success && payment.purpose === PAYMENT_PURPOSE_BOOKING) {
-    await notifySuccessfulBookingPayment({
-      id: payment.id,
-      bookingId: payment.bookingId,
-      amount: amountPaid || payment.amount,
+    await db.insert(paymentEvents).values({
+      paymentId: payment.id,
+      eventType: outcome.eventType,
+      payloadJson: outcome.rawPayload ? JSON.stringify(outcome.rawPayload) : null,
+      createdAt: new Date(),
     });
-  } else if (outcome.success) {
-    await applySubscriptionPayment(payment.providerId, amountPaid, payment.id);
-    const [provider] = await db
-      .select({ ownerUserId: providers.ownerUserId })
-      .from(providers)
-      .where(eq(providers.id, payment.providerId))
-      .limit(1);
-    if (provider) {
-      const displayAmount = Number.isFinite(amountPaid) ? amountPaid : SUBSCRIPTION_AMOUNT_KES;
-      await createNotification({
-        userId: provider.ownerUserId,
-        title: "Subscription Activated",
-        body: `Your Ksh ${displayAmount.toLocaleString()} payment was successful. Your listing is now visible to customers.`,
-        type: "payment",
-        actionType: "provider_subscription",
-        actionId: payment.id,
-        preference: "accountAlert",
+
+    if (outcome.success && payment.purpose === PAYMENT_PURPOSE_BOOKING) {
+      await notifySuccessfulBookingPayment({
+        id: payment.id,
+        bookingId: payment.bookingId,
+        amount: amountPaid || payment.amount,
       });
+    } else if (outcome.success) {
+      await applySubscriptionPayment(payment.providerId, amountPaid, payment.id);
+      const [provider] = await db
+        .select({ ownerUserId: providers.ownerUserId })
+        .from(providers)
+        .where(eq(providers.id, payment.providerId))
+        .limit(1);
+      if (provider) {
+        const displayAmount = Number.isFinite(amountPaid) ? amountPaid : SUBSCRIPTION_AMOUNT_KES;
+        await createNotification({
+          userId: provider.ownerUserId,
+          title: "Subscription Activated",
+          body: `Your Ksh ${displayAmount.toLocaleString()} payment was successful. Your listing is now visible to customers.`,
+          type: "payment",
+          actionType: "provider_subscription",
+          actionId: payment.id,
+          preference: "accountAlert",
+        });
+      }
+    } else {
+      await normalizeSubscriptionStatus(payment.providerId);
     }
-  } else {
-    await normalizeSubscriptionStatus(payment.providerId);
-  }
 
-  // Enforce the booking gate after any subscription payment state change so an
-  // unpaid provider cannot keep bookings open. On success this is a no-op (the
-  // subscription is active); on failure/expiry it force-closes the toggle.
-  if (payment.purpose !== PAYMENT_PURPOSE_BOOKING) {
-    await enforceBookingGateForProvider(payment.providerId);
-  }
-
-  void notifyAdminPaymentEvent({
-    paymentId: payment.id,
-    providerId: payment.providerId,
-    purpose: payment.purpose,
-    bookingId: payment.bookingId,
-    amountPaid: Number.isFinite(amountPaid) ? amountPaid : 0,
-    success: outcome.success,
-    mpesaReceiptNumber: outcome.mpesaReceiptNumber ?? null,
-  }).then((result) => {
-    if (!result.sent) {
-      console.error("[payment] admin payment alert not sent:", result.reason);
+    // Enforce the booking gate after any subscription payment state change so an
+    // unpaid provider cannot keep bookings open. On success this is a no-op (the
+    // subscription is active); on failure/expiry it force-closes the toggle.
+    if (payment.purpose !== PAYMENT_PURPOSE_BOOKING) {
+      await enforceBookingGateForProvider(payment.providerId);
     }
-  }).catch((error) => {
-    console.error("[payment] admin payment alert failed:", error);
+
+    afterDbCommit(() => notifyAdminPaymentEvent({
+      paymentId: payment.id,
+      providerId: payment.providerId,
+      purpose: payment.purpose,
+      bookingId: payment.bookingId,
+      amountPaid: Number.isFinite(amountPaid) ? amountPaid : 0,
+      success: outcome.success,
+      mpesaReceiptNumber: outcome.mpesaReceiptNumber ?? null,
+    }).then((result) => {
+      if (!result.sent) {
+        console.error("[payment] admin payment alert not sent:", result.reason);
+      }
+    }).catch((error) => {
+      console.error("[payment] admin payment alert failed:", error);
+    }));
+    return nextStatus;
   });
 };
 
@@ -802,11 +808,18 @@ export const processMpesaCallback = async (payload: MpesaCallbackBody) => {
   });
 
   const success = (callback?.ResultCode ?? 1) === 0;
+  if (success) {
+    const amount = Number(getMetadataValue(callback?.CallbackMetadata?.Item, "Amount"));
+    const receipt = getMetadataValue(callback?.CallbackMetadata?.Item, "MpesaReceiptNumber");
+    if (!Number.isFinite(amount) || amount !== Number(payment.amount) || typeof receipt !== "string" || !receipt.trim()) {
+      throw new ApiError(400, "Payment confirmation does not match the expected amount or receipt", "INVALID_CALLBACK");
+    }
+  }
   if (payment.status === "success" || payment.status === "failed") {
     return { ok: true, checkoutRequestId, status: payment.status, duplicate: true };
   }
 
-  await finalizePaymentStatus(payment, {
+  const finalStatus = await finalizePaymentStatus(payment, {
     success,
     amountPaid: getCallbackAmount(callback?.CallbackMetadata?.Item, Number(payment.amount)),
     mpesaReceiptNumber: (getMetadataValue(callback?.CallbackMetadata?.Item, "MpesaReceiptNumber") as string | undefined) ?? null,
@@ -817,7 +830,7 @@ export const processMpesaCallback = async (payload: MpesaCallbackBody) => {
   return {
     ok: true,
     checkoutRequestId,
-    status: success ? "success" : "failed",
+    status: finalStatus,
     payment: { id: payment.id },
   };
 };
@@ -858,7 +871,7 @@ export const getBookingPaymentStatus = async (
   let payment = await getLatestBookingPayment(bookingId);
 
   if (options?.reconcile && payment?.status === "pending" && payment.checkoutRequestId) {
-    if (payment.checkoutRequestId.startsWith("SIM-") || env.MPESA_SIMULATE) {
+    if (env.MPESA_SIMULATE) {
       await finalizePaymentStatus(payment, {
         success: true,
         amountPaid: Number(payment.amount),
@@ -866,7 +879,7 @@ export const getBookingPaymentStatus = async (
         rawPayload: { simulated: true, checkoutRequestId: payment.checkoutRequestId },
         eventType: "payment_success_simulate",
       });
-    } else if (!shouldThrottleStatusQuery(payment.checkoutRequestId)) {
+    } else if (!payment.checkoutRequestId.startsWith("SIM-") && !shouldThrottleStatusQuery(payment.checkoutRequestId)) {
       try {
         const result = await queryStkPushStatus(payment.checkoutRequestId);
         const resultCode =

@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
 import { ApiError } from "../utils/apiError";
+import { logPath } from "../utils/logPath";
 
 export const notFoundHandler = (_req: Request, res: Response) => {
   res.status(404).json({
@@ -23,7 +24,7 @@ export const errorHandler = (error: unknown, req: Request, res: Response, _next:
     // eslint-disable-next-line no-console
     console.warn("[apiError]", {
       method: req.method,
-      path: req.originalUrl,
+      path: logPath(req.originalUrl),
       status: error.statusCode,
       code: error.code,
       message: error.message,

@@ -1,4 +1,5 @@
 import postgres from "postgres";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { drizzle } from "drizzle-orm/postgres-js";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { env } from "../config/env";
@@ -6,6 +7,27 @@ import * as schema from "./schema";
 
 let postgresClient: postgres.Sql | null = null;
 let dbInstance: PostgresJsDatabase<typeof schema> | null = null;
+type Database = PostgresJsDatabase<typeof schema>;
+const transactionContext = new AsyncLocalStorage<{ db: Database; afterCommit: Array<() => void | Promise<unknown>> }>();
+
+// Nested services use the same transaction and connection through getDb().
+export const withDbTransaction = async <T>(work: () => Promise<T>): Promise<T> => {
+  if (transactionContext.getStore()) return work();
+  const afterCommit: Array<() => void | Promise<unknown>> = [];
+  const result = await getDb().transaction((tx) =>
+    transactionContext.run({ db: tx as unknown as Database, afterCommit }, work)
+  );
+  for (const effect of afterCommit) {
+    void Promise.resolve().then(effect).catch((error) => console.error("[after-commit] delivery failed", error));
+  }
+  return result;
+};
+
+export const afterDbCommit = (effect: () => void | Promise<unknown>) => {
+  const context = transactionContext.getStore();
+  if (context) context.afterCommit.push(effect);
+  else void Promise.resolve().then(effect).catch((error) => console.error("[after-commit] delivery failed", error));
+};
 
 const ensureDatabaseUrl = () => {
   if (!env.DATABASE_URL) {
@@ -45,6 +67,8 @@ export const getSqlClient = () => {
 };
 
 export const getDb = () => {
+  const context = transactionContext.getStore();
+  if (context) return context.db;
   if (!dbInstance) {
     dbInstance = drizzle(getSqlClient(), { schema });
   }

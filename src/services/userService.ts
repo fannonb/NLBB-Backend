@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDb } from "../db/client";
 import { providers, pushTokens, userPreferences, userProfiles, users } from "../db/schema";
@@ -570,22 +570,24 @@ export const deleteUserAccount = async (uid: string, email: string, password: st
   }
 
   const authClient = createSupabaseAuthClient();
-  const { error: verifyError } = await authClient.auth.signInWithPassword({
+  const { data: verified, error: verifyError } = await authClient.auth.signInWithPassword({
     email: email.trim().toLowerCase(),
     password,
   });
 
-  if (verifyError) {
+  if (verifyError || verified.user?.id !== uid || !verified.session) {
     throw new ApiError(401, "Password is incorrect", "INVALID_CREDENTIALS");
   }
 
   const db = getDb();
-  await db.delete(users).where(eq(users.id, uid));
+  await supabaseAdmin.auth.admin.signOut(verified.session.access_token, "global");
+  await db.execute(sql`delete from auth.sessions where user_id = ${uid}::uuid`);
 
   const { error: deleteError } = await supabaseAdmin.auth.admin.deleteUser(uid);
   if (deleteError) {
     throw new ApiError(500, "Could not complete account deletion", "DELETE_FAILED");
   }
 
+  await db.delete(users).where(eq(users.id, uid));
   return { deleted: true as const };
 };

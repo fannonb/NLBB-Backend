@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { timingSafeEqual } from "node:crypto";
 import { env } from "../config/env";
 import { ApiError } from "../utils/apiError";
 
@@ -11,7 +12,9 @@ export const verifyMpesaCallback = (req: Request, _res: Response, next: NextFunc
   const queryToken = typeof req.query.callbackToken === "string" ? req.query.callbackToken : undefined;
   const token = typeof headerToken === "string" ? headerToken : queryToken;
 
-  if (!token || token !== env.MPESA_CALLBACK_SECRET) {
+  const actual = Buffer.from(token ?? "");
+  const expected = Buffer.from(env.MPESA_CALLBACK_SECRET);
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
     return next(new ApiError(401, "Invalid callback token", "UNAUTHORIZED_CALLBACK"));
   }
 

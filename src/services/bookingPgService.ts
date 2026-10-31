@@ -1,7 +1,7 @@
 import crypto from "crypto";
-import { desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { z } from "zod";
-import { getDb } from "../db/client";
+import { afterDbCommit, getDb, withDbTransaction } from "../db/client";
 import { bookingStatusHistory, bookings, providerServices, providers, reviews, userProfiles } from "../db/schema";
 import type { Booking, BookingStatus, Provider, UserRole } from "../types/domain";
 import { ApiError } from "../utils/apiError";
@@ -254,7 +254,6 @@ export const createBooking = async (
   customerId: string,
   payload: z.infer<typeof createBookingSchema>
 ) => {
-  const db = getDb();
   const provider = await getProviderById(payload.providerId, { uid: customerId, role: "customer" });
   if (!provider) {
     throw new ApiError(404, "Provider not found", "PROVIDER_NOT_FOUND");
@@ -281,139 +280,152 @@ export const createBooking = async (
   }
 
   const endAtDate = new Date(scheduledAtDate.getTime() + resolvedService.duration * 60_000);
-  const existingBookings = await db.select().from(bookings).where(eq(bookings.providerId, payload.providerId));
-  const conflictingBooking = existingBookings.find((booking) => {
-    if (!["pending", "accepted"].includes(booking.status)) {
-      return false;
-    }
-    return hasTimeOverlap(scheduledAtDate, endAtDate, booking.scheduledStartAt, booking.scheduledEndAt);
-  });
-
-  if (conflictingBooking) {
-    throw new ApiError(409, "Selected time slot is not available", "BOOKING_TIME_CONFLICT", {
-      conflictingBookingId: conflictingBooking.id,
+  return withDbTransaction(async () => {
+    const db = getDb();
+    // Serialize reservations for this provider, including across API instances.
+    const [lockedProvider] = await db.select().from(providers)
+      .where(eq(providers.id, payload.providerId)).for("update");
+    if (!lockedProvider?.isOpen) throw new ApiError(409, "Provider is currently closed", "PROVIDER_CLOSED");
+    const existingBookings = await db.select().from(bookings).where(and(
+      eq(bookings.providerId, payload.providerId),
+      inArray(bookings.status, ["pending", "accepted"]),
+      lt(bookings.scheduledStartAt, endAtDate),
+      gt(bookings.scheduledEndAt, scheduledAtDate)
+    ));
+    const conflictingBooking = existingBookings.find((booking) => {
+      if (!["pending", "accepted"].includes(booking.status)) {
+        return false;
+      }
+      return hasTimeOverlap(scheduledAtDate, endAtDate, booking.scheduledStartAt, booking.scheduledEndAt);
     });
-  }
 
-  const now = new Date();
-  let bookingRow;
-  try {
-    [bookingRow] = await db
-      .insert(bookings)
-      .values({
-        referenceCode: makeBookingRef(),
-        customerUserId: customerId,
-        providerId: payload.providerId,
-        providerServiceId: resolvedService.id,
-        scheduledStartAt: scheduledAtDate,
-        scheduledEndAt: endAtDate,
-        status: "pending",
-        notes: payload.notes ?? null,
-        serviceName: resolvedService.name,
-        servicePriceAmount: resolvedService.price.toString(),
-        totalAmount: resolvedService.price.toString(),
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-  } catch (error) {
-    if (!isMissingBookingServiceNameColumnError(error)) {
-      throw error;
+    if (conflictingBooking) {
+      throw new ApiError(409, "Selected time slot is not available", "BOOKING_TIME_CONFLICT", {
+        conflictingBookingId: conflictingBooking.id,
+      });
     }
 
-    [bookingRow] = await db
-      .insert(bookings)
-      .values({
-        referenceCode: makeBookingRef(),
-        customerUserId: customerId,
-        providerId: payload.providerId,
-        providerServiceId: resolvedService.id,
-        scheduledStartAt: scheduledAtDate,
-        scheduledEndAt: endAtDate,
-        status: "pending",
-        notes: payload.notes ?? null,
-        servicePriceAmount: resolvedService.price.toString(),
-        totalAmount: resolvedService.price.toString(),
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
-  }
+    const now = new Date();
+    let bookingRow;
+    try {
+      [bookingRow] = await db.transaction((tx) => tx
+        .insert(bookings)
+        .values({
+          referenceCode: makeBookingRef(),
+          customerUserId: customerId,
+          providerId: payload.providerId,
+          providerServiceId: resolvedService.id,
+          scheduledStartAt: scheduledAtDate,
+          scheduledEndAt: endAtDate,
+          status: "pending",
+          notes: payload.notes ?? null,
+          serviceName: resolvedService.name,
+          servicePriceAmount: resolvedService.price.toString(),
+          totalAmount: resolvedService.price.toString(),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning());
+    } catch (error) {
+      if (!isMissingBookingServiceNameColumnError(error)) {
+        throw error;
+      }
 
-  await db.insert(bookingStatusHistory).values({
-    bookingId: bookingRow.id,
-    fromStatus: null,
-    toStatus: "pending",
-    actorUserId: customerId,
-    reason: "Booking created",
-    createdAt: now,
-  });
-
-  await createNotification({
-    userId: provider.ownerUserId,
-    title: "New Booking Request",
-    body: `You have a new booking request for ${resolvedService.name}.`,
-    type: "booking",
-    actionType: "provider_appointment_detail",
-    actionId: bookingRow.id,
-    preference: "bookingConfirmation",
-  });
-
-  await createNotification({
-    userId: customerId,
-    title: "Booking Request Sent",
-    body: `Your request for ${resolvedService.name} with ${provider.name} has been sent.`,
-    type: "booking",
-    actionType: "customer_bookings",
-    actionId: bookingRow.id,
-    preference: "bookingConfirmation",
-  });
-
-  const [customerProfile] = await db
-    .select({ fullName: userProfiles.fullName })
-    .from(userProfiles)
-    .where(eq(userProfiles.userId, customerId))
-    .limit(1);
-
-  void sendAdminEventEmail({
-    subject: "NLBB admin alert: new booking request",
-    title: "New booking request",
-    intro: "A customer created a new booking request.",
-    details: [
-      { label: "Booking ref", value: bookingRow.referenceCode },
-      { label: "Customer", value: customerProfile?.fullName?.trim() || customerId },
-      { label: "Provider", value: provider.name },
-      { label: "Service", value: resolvedService.name },
-      { label: "Listed service price", value: `Ksh ${resolvedService.price.toLocaleString()}` },
-      { label: "Scheduled at", value: scheduledAtDate.toISOString() },
-    ],
-    footer: "Log in to the admin portal to review booking activity.",
-  }).then((result) => {
-    if (!result.sent) {
-      console.error("[booking] admin booking alert not sent:", result.reason);
+      [bookingRow] = await db
+        .insert(bookings)
+        .values({
+          referenceCode: makeBookingRef(),
+          customerUserId: customerId,
+          providerId: payload.providerId,
+          providerServiceId: resolvedService.id,
+          scheduledStartAt: scheduledAtDate,
+          scheduledEndAt: endAtDate,
+          status: "pending",
+          notes: payload.notes ?? null,
+          servicePriceAmount: resolvedService.price.toString(),
+          totalAmount: resolvedService.price.toString(),
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
     }
-  }).catch((error) => {
-    console.error("[booking] admin booking alert failed:", error);
-  });
 
-  return enrichBooking({
-    id: bookingRow.id,
-    ref: bookingRow.referenceCode,
-    customerId,
-    providerId: payload.providerId,
-    providerName: provider.name,
-    serviceName: resolvedService.name,
-    servicePrice: resolvedService.price,
-    scheduledAt: scheduledAtDate.toISOString(),
-    endAt: endAtDate.toISOString(),
-    duration: resolvedService.duration,
-    status: "pending",
-    notes: payload.notes,
-    totalAmount: resolvedService.price,
-    platformFee: 0,
-    createdAt: bookingRow.createdAt.toISOString(),
-    updatedAt: bookingRow.updatedAt.toISOString(),
-    providerServiceId: bookingRow.providerServiceId ?? resolvedService.id,
+    await db.insert(bookingStatusHistory).values({
+      bookingId: bookingRow.id,
+      fromStatus: null,
+      toStatus: "pending",
+      actorUserId: customerId,
+      reason: "Booking created",
+      createdAt: now,
+    });
+
+
+    await createNotification({
+      userId: provider.ownerUserId,
+      title: "New Booking Request",
+      body: `You have a new booking request for ${resolvedService.name}.`,
+      type: "booking",
+      actionType: "provider_appointment_detail",
+      actionId: bookingRow.id,
+      preference: "bookingConfirmation",
+    });
+
+    await createNotification({
+      userId: customerId,
+      title: "Booking Request Sent",
+      body: `Your request for ${resolvedService.name} with ${provider.name} has been sent.`,
+      type: "booking",
+      actionType: "customer_bookings",
+      actionId: bookingRow.id,
+      preference: "bookingConfirmation",
+    });
+
+    const [customerProfile] = await db
+      .select({ fullName: userProfiles.fullName })
+      .from(userProfiles)
+      .where(eq(userProfiles.userId, customerId))
+      .limit(1);
+
+    afterDbCommit(() => sendAdminEventEmail({
+      subject: "NLBB admin alert: new booking request",
+      title: "New booking request",
+      intro: "A customer created a new booking request.",
+      details: [
+        { label: "Booking ref", value: bookingRow.referenceCode },
+        { label: "Customer", value: customerProfile?.fullName?.trim() || customerId },
+        { label: "Provider", value: provider.name },
+        { label: "Service", value: resolvedService.name },
+        { label: "Listed service price", value: `Ksh ${resolvedService.price.toLocaleString()}` },
+        { label: "Scheduled at", value: scheduledAtDate.toISOString() },
+      ],
+      footer: "Log in to the admin portal to review booking activity.",
+    }).then((result) => {
+      if (!result.sent) {
+        console.error("[booking] admin booking alert not sent:", result.reason);
+      }
+    }).catch((error) => {
+      console.error("[booking] admin booking alert failed:", error);
+    }));
+
+    return enrichBooking({
+      id: bookingRow.id,
+      ref: bookingRow.referenceCode,
+      customerId,
+      providerId: payload.providerId,
+      providerName: provider.name,
+      serviceName: resolvedService.name,
+      servicePrice: resolvedService.price,
+      scheduledAt: scheduledAtDate.toISOString(),
+      endAt: endAtDate.toISOString(),
+      duration: resolvedService.duration,
+      status: "pending",
+      notes: payload.notes,
+      totalAmount: resolvedService.price,
+      platformFee: 0,
+      createdAt: bookingRow.createdAt.toISOString(),
+      updatedAt: bookingRow.updatedAt.toISOString(),
+      providerServiceId: bookingRow.providerServiceId ?? resolvedService.id,
+    });
   });
 };
 
@@ -477,101 +489,103 @@ export const updateBookingStatus = async (
   actor: { uid: string; role: UserRole },
   nextStatus: BookingStatus
 ) => {
-  const db = getDb();
-  const [row] = await db.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1);
-  if (!row) {
-    throw new ApiError(404, "Booking not found", "BOOKING_NOT_FOUND");
-  }
-
-  if (actor.role === "provider") {
-    const [provider] = await db.select({ id: providers.id }).from(providers).where(eq(providers.ownerUserId, actor.uid)).limit(1);
-    if (!provider || provider.id !== row.providerId) {
-      throw new ApiError(403, "Cannot manage this booking", "FORBIDDEN");
+  return withDbTransaction(async () => {
+    const db = getDb();
+    const [row] = await db.select().from(bookings).where(eq(bookings.id, bookingId)).limit(1).for("update");
+    if (!row) {
+      throw new ApiError(404, "Booking not found", "BOOKING_NOT_FOUND");
     }
-  } else if (actor.role === "customer") {
-    if (row.customerUserId !== actor.uid || nextStatus !== "cancelled") {
-      throw new ApiError(403, "Customers can only cancel their own bookings", "FORBIDDEN");
+
+    if (actor.role === "provider") {
+      const [provider] = await db.select({ id: providers.id }).from(providers).where(eq(providers.ownerUserId, actor.uid)).limit(1);
+      if (!provider || provider.id !== row.providerId) {
+        throw new ApiError(403, "Cannot manage this booking", "FORBIDDEN");
+      }
+    } else if (actor.role === "customer") {
+      if (row.customerUserId !== actor.uid || nextStatus !== "cancelled") {
+        throw new ApiError(403, "Customers can only cancel their own bookings", "FORBIDDEN");
+      }
     }
-  }
 
-  if (!canTransition(row.status as BookingStatus, nextStatus)) {
-    throw new ApiError(400, `Cannot transition booking from ${row.status} to ${nextStatus}`, "INVALID_STATUS_TRANSITION");
-  }
+    if (!canTransition(row.status as BookingStatus, nextStatus)) {
+      throw new ApiError(400, `Cannot transition booking from ${row.status} to ${nextStatus}`, "INVALID_STATUS_TRANSITION");
+    }
 
-  const [updated] = await db
-    .update(bookings)
-    .set({ status: nextStatus, updatedAt: new Date() })
-    .where(eq(bookings.id, bookingId))
-    .returning();
+    const [updated] = await db
+      .update(bookings)
+      .set({ status: nextStatus, updatedAt: new Date() })
+      .where(eq(bookings.id, bookingId))
+      .returning();
 
-  await db.insert(bookingStatusHistory).values({
-    bookingId,
-    fromStatus: row.status,
-    toStatus: nextStatus,
-    actorUserId: actor.uid,
-    reason: null,
-    createdAt: new Date(),
+    await db.insert(bookingStatusHistory).values({
+      bookingId,
+      fromStatus: row.status,
+      toStatus: nextStatus,
+      actorUserId: actor.uid,
+      reason: null,
+      createdAt: new Date(),
+    });
+
+    let updatedRow;
+    try {
+      [updatedRow] = await db
+        .select(bookingRowSelection)
+        .from(bookings)
+        .leftJoin(providerServices, eq(bookings.providerServiceId, providerServices.id))
+        .leftJoin(reviews, eq(bookings.id, reviews.bookingId))
+        .where(eq(bookings.id, updated.id))
+        .limit(1);
+    } catch (error) {
+      if (!isMissingBookingServiceNameColumnError(error)) {
+        throw error;
+      }
+      [updatedRow] = await db
+        .select(legacyBookingRowSelection)
+        .from(bookings)
+        .leftJoin(providerServices, eq(bookings.providerServiceId, providerServices.id))
+        .leftJoin(reviews, eq(bookings.id, reviews.bookingId))
+        .where(eq(bookings.id, updated.id))
+        .limit(1);
+    }
+
+    if (!updatedRow) {
+      throw new ApiError(500, "Could not reload booking after update", "BOOKING_RELOAD_FAILED");
+    }
+
+    const booking = mapBookingRow(updatedRow);
+    const enrichedBooking = await enrichBooking(booking);
+    const customerNotification = getCustomerBookingNotificationCopy(nextStatus, enrichedBooking);
+
+    await createNotification({
+      userId: row.customerUserId,
+      title: customerNotification.title,
+      body: customerNotification.body,
+      type: "booking",
+      actionType: "customer_bookings",
+      actionId: updated.id,
+      preference: nextStatus === "accepted" ? "bookingConfirmation" : "bookingUpdate",
+    });
+
+    if (actor.role === "customer" && nextStatus === "cancelled") {
+      const [provider] = await db
+        .select({ ownerUserId: providers.ownerUserId })
+        .from(providers)
+        .where(eq(providers.id, row.providerId))
+        .limit(1);
+
+      if (provider) {
+        await createNotification({
+          userId: provider.ownerUserId,
+          title: "Booking Cancelled",
+          body: `${enrichedBooking.customerName ?? "A customer"} cancelled ${enrichedBooking.serviceName}.`,
+          type: "booking",
+          actionType: "provider_appointment_detail",
+          actionId: updated.id,
+          preference: "bookingUpdate",
+        });
+      }
+    }
+
+    return enrichedBooking;
   });
-
-  let updatedRow;
-  try {
-    [updatedRow] = await db
-      .select(bookingRowSelection)
-      .from(bookings)
-      .leftJoin(providerServices, eq(bookings.providerServiceId, providerServices.id))
-      .leftJoin(reviews, eq(bookings.id, reviews.bookingId))
-      .where(eq(bookings.id, updated.id))
-      .limit(1);
-  } catch (error) {
-    if (!isMissingBookingServiceNameColumnError(error)) {
-      throw error;
-    }
-    [updatedRow] = await db
-      .select(legacyBookingRowSelection)
-      .from(bookings)
-      .leftJoin(providerServices, eq(bookings.providerServiceId, providerServices.id))
-      .leftJoin(reviews, eq(bookings.id, reviews.bookingId))
-      .where(eq(bookings.id, updated.id))
-      .limit(1);
-  }
-
-  if (!updatedRow) {
-    throw new ApiError(500, "Could not reload booking after update", "BOOKING_RELOAD_FAILED");
-  }
-
-  const booking = mapBookingRow(updatedRow);
-  const enrichedBooking = await enrichBooking(booking);
-  const customerNotification = getCustomerBookingNotificationCopy(nextStatus, enrichedBooking);
-
-  await createNotification({
-    userId: row.customerUserId,
-    title: customerNotification.title,
-    body: customerNotification.body,
-    type: "booking",
-    actionType: "customer_bookings",
-    actionId: updated.id,
-    preference: nextStatus === "accepted" ? "bookingConfirmation" : "bookingUpdate",
-  });
-
-  if (actor.role === "customer" && nextStatus === "cancelled") {
-    const [provider] = await db
-      .select({ ownerUserId: providers.ownerUserId })
-      .from(providers)
-      .where(eq(providers.id, row.providerId))
-      .limit(1);
-
-    if (provider) {
-      await createNotification({
-        userId: provider.ownerUserId,
-        title: "Booking Cancelled",
-        body: `${enrichedBooking.customerName ?? "A customer"} cancelled ${enrichedBooking.serviceName}.`,
-        type: "booking",
-        actionType: "provider_appointment_detail",
-        actionId: updated.id,
-        preference: "bookingUpdate",
-      });
-    }
-  }
-
-  return enrichedBooking;
 };

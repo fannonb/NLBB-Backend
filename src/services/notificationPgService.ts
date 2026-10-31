@@ -1,6 +1,6 @@
 import axios from "axios";
 import { and, desc, eq } from "drizzle-orm";
-import { getDb } from "../db/client";
+import { afterDbCommit, getDb } from "../db/client";
 import { notifications } from "../db/schema";
 import type { Notification } from "../types/domain";
 import { getPushTokensForUser, getUserPreferences, type UserPreferences } from "./userService";
@@ -67,7 +67,7 @@ export const createNotification = async (input: CreateNotificationInput) => {
     .returning();
 
   // Don't block booking/API latency on Expo push delivery.
-  void isPushAllowedByPreferences(input.userId, input.preference)
+  afterDbCommit(() => isPushAllowedByPreferences(input.userId, input.preference)
     .then(async (allowed) => {
       if (!allowed) {
         console.log("[push] skipped by user preference", {
@@ -114,7 +114,7 @@ export const createNotification = async (input: CreateNotificationInput) => {
         notificationId: notification.id,
         error: error instanceof Error ? error.message : String(error),
       });
-    });
+    }));
 
   return {
     id: notification.id,

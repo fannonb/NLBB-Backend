@@ -5,6 +5,9 @@ export interface SupabaseAccessTokenClaims {
   email?: string;
   session_id?: string;
   exp?: number;
+  iss?: string;
+  aud?: string | string[];
+  nbf?: number;
   role?: string;
   // Supabase emits either RFC-8176 strings or { method, timestamp } entries.
   amr?: Array<string | { method?: string; timestamp?: number }>;
@@ -39,7 +42,8 @@ export const readVerifiedTokenClaims = (token: string): SupabaseAccessTokenClaim
 
 export const verifySupabaseAccessToken = (
   token: string,
-  secret: string
+  secret: string,
+  issuer?: string
 ): SupabaseAccessTokenClaims | null => {
   const parts = token.split(".");
   if (parts.length !== 3) {
@@ -57,13 +61,18 @@ export const verifySupabaseAccessToken = (
   }
 
   try {
+    const header = JSON.parse(decodeBase64Url(headerPart).toString("utf8"));
+    if (header.alg !== "HS256") return null;
     const payload = JSON.parse(decodeBase64Url(payloadPart).toString("utf8")) as SupabaseAccessTokenClaims;
-    if (!payload.sub) {
+    if (typeof payload.sub !== "string" || !payload.sub || typeof payload.session_id !== "string") {
       return null;
     }
-    if (payload.exp && payload.exp * 1000 <= Date.now()) {
+    if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp) || payload.exp * 1000 <= Date.now()) {
       return null;
     }
+    if (payload.nbf !== undefined && (typeof payload.nbf !== "number" || payload.nbf * 1000 > Date.now())) return null;
+    if (issuer && payload.iss !== issuer) return null;
+    if (payload.aud !== "authenticated" && !(Array.isArray(payload.aud) && payload.aud.includes("authenticated"))) return null;
     return payload;
   } catch {
     return null;
